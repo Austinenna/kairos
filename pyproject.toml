@@ -1,0 +1,33 @@
+[project]
+name = "kairos"
+version = "0.1.0"
+description = "个人工作与生活 agent 助手，也是一个从零学习 agent 开发的项目"
+readme = "README.md"
+authors = [
+    { name = "Austinenna", email = "218343644+Austinenna@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "openai>=3.24.0",
+    "pydantic-settings>=2.15.0",
+    "rich>=15.0.0",
+]
+
+[project.scripts]
+kairos = "kairos:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.10",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
