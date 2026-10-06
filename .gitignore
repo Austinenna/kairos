@@ -19,3 +19,6 @@ data/
 .ruff_cache/
 .mypy_cache/
 *.egg-info/
+
+# 本地源码参考仓库（各自独立 Git 仓库，不纳入 Kairos）
+references/
