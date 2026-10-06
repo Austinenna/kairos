@@ -14,7 +14,9 @@ PRICES: dict[str, dict[str, tuple[float, float, float]]] = {
 }
 
 CONTEXT_WINDOW: dict[str, int] = {
-    "deepseek-flash": 1_000_000,
+    # 2026-10 实测：DeepSeek API 返回 maximum context length 1048576。
+    "deepseek-flash": 1_048_576,
+    # 该模型尚未在本项目中做同样的超限实测，暂保留原值。
     "deepseek-v4-pro": 1_000_000,
 }
 
