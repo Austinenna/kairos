@@ -36,39 +36,32 @@ def run_single_tool_turn(
     tool_handlers: Mapping[str, ToolHandler],
     tool_schemas: list[dict],
 ) -> tuple[str, list[dict]]:
-    """执行一次最多包含一个工具调用的 Agent 回合。
+    """执行可包含多轮、多工具调用的 Agent 回合。
 
-    模型第一次直接回答时，函数会直接返回；模型请求一个工具时，函数会执行工具，
-    把 assistant 工具调用和 tool 结果写回 messages，再请求一次模型得到最终回答。
+    模型直接回答时函数返回；模型请求工具时，函数执行这一批工具，把 assistant
+    工具调用和 tool 结果写回 messages，再次请求模型，直到模型给出最终回答。
     """
-    response = model.complete(messages=messages, tools=tool_schemas)
-    tool_calls = response.get("tool_calls") or []
-    if not tool_calls:
-        final_content = response.get("content") or ""
-        messages.append({"role": "assistant", "content": final_content})
-        return final_content, messages
+    while True:
+        response = model.complete(messages=messages, tools=tool_schemas)
+        tool_calls = response.get("tool_calls") or []
+        if not tool_calls:
+            final_content = response.get("content") or ""
+            messages.append({"role": "assistant", "content": final_content})
+            return final_content, messages
 
-    messages.append(_assistant_message(response, tool_calls))
-    for tool_call in tool_calls:
-        function = tool_call["function"]
-        tool_name = function["name"]
-        arguments = json.loads(function.get("arguments", "{}"))
-        if not isinstance(arguments, dict):
-            raise ValueError("工具参数必须是 JSON 对象")
+        messages.append(_assistant_message(response, tool_calls))
+        for tool_call in tool_calls:
+            function = tool_call["function"]
+            tool_name = function["name"]
+            arguments = json.loads(function.get("arguments", "{}"))
+            if not isinstance(arguments, dict):
+                raise ValueError("工具参数必须是 JSON 对象")
 
-        result = tool_handlers[tool_name](**arguments)
-        messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": tool_call["id"],
-                "content": json.dumps(result, ensure_ascii=False),
-            }
-        )
-
-    final_response = model.complete(messages=messages, tools=tool_schemas)
-    if final_response.get("tool_calls"):
-        raise NotImplementedError("工具执行后的第二次响应暂时不能继续调用工具")
-
-    final_content = final_response.get("content") or ""
-    messages.append({"role": "assistant", "content": final_content})
-    return final_content, messages
+            result = tool_handlers[tool_name](**arguments)
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call["id"],
+                    "content": json.dumps(result, ensure_ascii=False),
+                }
+            )

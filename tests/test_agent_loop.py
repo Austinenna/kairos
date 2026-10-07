@@ -130,3 +130,45 @@ def test_single_tool_turn_executes_multiple_tool_calls_in_order():
     assert final_content == "两个操作都完成了。"
     assert called == [("first", {"value": 1}), ("second", {"value": 2})]
     assert [message["role"] for message in messages] == ["user", "assistant", "tool", "tool", "assistant"]
+
+
+def test_single_tool_turn_continues_after_tool_result_until_final_answer():
+    model = FakeModel(
+        [
+            {
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "first", "arguments": "{}"}},
+                ],
+            },
+            {
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_2", "function": {"name": "second", "arguments": "{}"}},
+                ],
+            },
+            {"content": "两步都完成了。", "tool_calls": []},
+        ]
+    )
+    called = []
+
+    final_content, messages = run_single_tool_turn(
+        [{"role": "user", "content": "分两步执行"}],
+        model,
+        {
+            "first": lambda: called.append("first") or {"ok": "first"},
+            "second": lambda: called.append("second") or {"ok": "second"},
+        },
+        [],
+    )
+
+    assert final_content == "两步都完成了。"
+    assert called == ["first", "second"]
+    assert [message["role"] for message in messages] == [
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
