@@ -7,7 +7,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from .agent_loop import Model, run_single_tool_turn
+from .agent_loop import Model, run_tool_loop
 from .config import PROJECT_ROOT, Settings
 from .model import DeepSeekModel
 from .todos import add_todo, complete_todo, initialize_database, list_todos, update_todo
@@ -36,7 +36,7 @@ def run_prompt(prompt: str, *, model: Model, db_path: str | Path) -> tuple[str, 
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ]
-        return run_single_tool_turn(
+        return run_tool_loop(
             messages,
             model,
             build_tool_handlers(connection),

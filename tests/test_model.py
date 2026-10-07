@@ -80,3 +80,19 @@ def test_complete_normalizes_tool_call_and_reasoning_content():
             }
         ],
     }
+
+
+def test_complete_preserves_finish_reason():
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                finish_reason="length",
+                message=SimpleNamespace(content="部分回答", tool_calls=[]),
+            )
+        ]
+    )
+    model = DeepSeekModel(settings(), client=FakeClient(response))
+
+    result = model.complete(messages=[], tools=[])
+
+    assert result == {"content": "部分回答", "tool_calls": [], "finish_reason": "length"}
