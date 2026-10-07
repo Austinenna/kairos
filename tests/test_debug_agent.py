@@ -1,0 +1,86 @@
+from types import SimpleNamespace
+
+from kairos.debug_agent import run_cli, run_prompt
+
+
+class FakeModel:
+    def __init__(self):
+        self.calls = []
+        self.responses = iter(
+            [
+                {
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "add_todo", "arguments": '{"title":"真实链路测试"}'},
+                        }
+                    ],
+                },
+                {"content": "已加入待办。", "tool_calls": []},
+            ]
+        )
+
+    def complete(self, *, messages, tools):
+        self.calls.append({"messages": messages, "tools": tools})
+        return next(self.responses)
+
+
+def test_run_prompt_wires_model_to_sqlite_and_tool_schemas(tmp_path):
+    model = FakeModel()
+
+    answer, messages = run_prompt("加一个待办", model=model, db_path=tmp_path / "kairos.sqlite3")
+
+    assert answer == "已加入待办。"
+    assert [message["role"] for message in messages] == ["system", "user", "assistant", "tool", "assistant"]
+    assert model.calls[0]["tools"][0]["function"]["name"] == "add_todo"
+
+
+class FakeCompletions:
+    def __init__(self, responses):
+        self.responses = iter(responses)
+
+    def create(self, **kwargs):
+        return next(self.responses)
+
+
+class FakeClient:
+    def __init__(self, responses):
+        self.chat = SimpleNamespace(completions=FakeCompletions(responses))
+
+
+def test_run_cli_connects_real_adapter_to_tool_loop(tmp_path):
+    responses = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_1",
+                                type="function",
+                                function=SimpleNamespace(name="add_todo", arguments='{"title":"适配器测试"}'),
+                            )
+                        ],
+                    )
+                )
+            ]
+        ),
+        SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="已完成。", tool_calls=[]))]),
+    ]
+    settings = SimpleNamespace(
+        kairos_model="deepseek-flash",
+        deepseek_api_key="test-key",
+        deepseek_base_url="https://example.test",
+    )
+
+    answer = run_cli(
+        "加一个待办",
+        settings=settings,
+        client=FakeClient(responses),
+        db_path=tmp_path / "kairos.sqlite3",
+    )
+
+    assert answer == "已完成。"

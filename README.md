@@ -28,10 +28,18 @@ uv run kairos
 | `/reset` | 清空对话 |
 | `/exit` | 退出 |
 
+阶段 1 的单轮真实模型调试可以单独运行，不影响阶段 0 的聊天历史：
+
+```bash
+uv run python -m kairos.debug_agent "把学习 Agent 加入待办"
+```
+
+待办数据保存在本地 `data/kairos.sqlite3`；该命令需要 `.env` 中的 `DEEPSEEK_API_KEY`。
+
 ## 进度
 
 - [x] 阶段 0：多轮对话、流式输出、token 和费用统计
-- [ ] 阶段 1：手写 agent 循环 + 待办工具
+- [ ] 阶段 1：手写 agent 循环 + 待办工具（已完成 SQLite、Schema、单工具循环和真实模型调试链路；多工具与多轮工具调用待补）
 - [ ] 阶段 2：工具设计与安全
 - [ ] 阶段 3：记忆与上下文管理
 - [ ] 阶段 4：主动性
