@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from kairos.debug_agent import run_cli, run_prompt
+from kairos.agent_app import run_cli, run_prompt
 
 
 class FakeModel:

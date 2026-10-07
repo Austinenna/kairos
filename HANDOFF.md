@@ -10,7 +10,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 - 当前代码完成阶段 0：命令行多轮对话、流式输出、思考模式切换、消息历史查看、文件输入，以及 token/费用统计。
 - `src/kairos/config.py` 从项目根目录 `.env` 和环境变量读取 DeepSeek 配置；`src/kairos/chat.py` 维护消息列表并调用 OpenAI 兼容接口；`src/kairos/pricing.py` 负责用量转换和费用估算。
 - `tests/test_pricing.py` 覆盖高峰时段、缓存输入计费和未知模型价格。
-- 阶段 1 已完成最小闭环：SQLite 待办函数、工具 Schema、一次最多执行一个工具的手写循环，以及 `DeepSeekModel` 和 `python -m kairos.debug_agent` 真实调试入口。当前仍不支持一次请求中的多个工具调用、工具执行后的继续调用和完整错误回传。
+- 阶段 1 已完成最小闭环：SQLite 待办函数、工具 Schema、一次最多执行一个工具的手写循环，以及 `DeepSeekModel` 和 `python scripts/debug_agent.py` 真实调试入口。可复用编排位于 `src/kairos/agent_app.py`，调试脚本单独放在 `scripts/`。当前仍不支持一次请求中的多个工具调用、工具执行后的继续调用和完整错误回传。
 
 ## 正常运行流程
 

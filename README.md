@@ -31,10 +31,11 @@ uv run kairos
 阶段 1 的单轮真实模型调试可以单独运行，不影响阶段 0 的聊天历史：
 
 ```bash
-uv run python -m kairos.debug_agent "把学习 Agent 加入待办"
+uv run python scripts/debug_agent.py "把学习 Agent 加入待办"
 ```
 
 待办数据保存在本地 `data/kairos.sqlite3`；该命令需要 `.env` 中的 `DEEPSEEK_API_KEY`。
+命令行脚本位于 `scripts/`，正式的 Agent 编排代码位于 `src/kairos/agent_app.py`。
 
 ## 进度
 

@@ -1,14 +1,8 @@
-"""阶段 1 的真实模型调试入口。
+"""Kairos 待办 Agent 的正式编排入口。
 
-示例：
-
-    uv run python -m kairos.debug_agent "把学习 Agent 加入待办"
-
-该入口只执行一轮请求，数据库保存在 ``data/kairos.sqlite3``，便于观察模型、
-工具 Schema、SQLite 和 agent 循环之间的完整连接。
+这里放可复用的模型、工具和数据库连接逻辑；命令行调试脚本只负责读取输入和打印结果。
 """
 
-import argparse
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -25,7 +19,7 @@ SYSTEM_PROMPT = """你是 Kairos，用户的个人助手。回答简洁直接，
 
 
 def build_tool_handlers(connection: Any) -> dict[str, Any]:
-    """把数据库连接绑定到四个待办函数，交给 agent 循环按名称调用。"""
+    """把数据库连接绑定到四个待办函数，交给 Agent 循环按名称调用。"""
     return {
         "add_todo": partial(add_todo, connection),
         "list_todos": partial(list_todos, connection),
@@ -35,10 +29,7 @@ def build_tool_handlers(connection: Any) -> dict[str, Any]:
 
 
 def run_prompt(prompt: str, *, model: Model, db_path: str | Path) -> tuple[str, list[dict]]:
-    """用传入的模型执行一轮待办 Agent 请求。
-
-    ``model`` 可替换成 Fake Model，因此这层可以在没有网络和密钥时测试完整工具闭环。
-    """
+    """用传入的模型执行一轮待办 Agent 请求。"""
     connection = initialize_database(db_path)
     try:
         messages = [
@@ -64,20 +55,3 @@ def run_cli(
     database_path = db_path or PROJECT_ROOT / "data" / "kairos.sqlite3"
     answer, _ = run_prompt(prompt, model=model, db_path=database_path)
     return answer
-
-
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="用真实 DeepSeek 模型调试 Kairos 待办工具循环")
-    parser.add_argument("prompt", nargs="*", help="本轮要发送给 Kairos 的问题；省略时从 stdin 读取")
-    args = parser.parse_args(argv)
-    prompt = " ".join(args.prompt).strip()
-    if not prompt:
-        prompt = input("你 › ").strip()
-    if not prompt:
-        parser.error("请输入要发送的问题")
-
-    print(run_cli(prompt))
-
-
-if __name__ == "__main__":
-    main()
