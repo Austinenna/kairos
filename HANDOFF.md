@@ -10,7 +10,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 - 当前代码完成阶段 0：命令行多轮对话、流式输出、思考模式切换、消息历史查看、文件输入，以及 token/费用统计。
 - `src/kairos/config.py` 从项目根目录 `.env` 和环境变量读取 DeepSeek 配置；`src/kairos/chat.py` 维护消息列表并调用 OpenAI 兼容接口；`src/kairos/pricing.py` 负责用量转换和费用估算。
 - `tests/test_pricing.py` 覆盖高峰时段、缓存输入计费和未知模型价格。
-- 阶段 1 已完成最小闭环：SQLite 待办函数、工具 Schema、一次最多执行一个工具的手写循环，以及 `DeepSeekModel` 和 `python scripts/debug_agent.py` 真实调试入口。可复用编排位于 `src/kairos/agent_app.py`，调试脚本单独放在 `scripts/`。当前仍不支持一次请求中的多个工具调用、工具执行后的继续调用和完整错误回传。
+- 阶段 1 已完成最小闭环：SQLite 待办函数、工具 Schema、支持同一响应多个工具调用的手写循环，以及 `DeepSeekModel` 和 `python scripts/debug_agent.py` 真实调试入口。可复用编排位于 `src/kairos/agent_app.py`，调试脚本单独放在 `scripts/`。当前仍不支持工具执行后的继续调用、完整错误回传和轮数限制。
 
 ## 正常运行流程
 
@@ -37,7 +37,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 
 ## 下一步
 
-下一步从阶段 1 的边界补强开始：先在真实调试入口中观察 API 错误、工具参数错误和多工具响应，再决定是否扩展最大轮数、错误回传和工具安全策略。每完成一个独立阶段，更新 README、学习记录和本交接文件。
+下一步继续观察工具参数错误和工具执行后的第二轮响应，再单独决定是否加入错误回传或轮数限制。每完成一个独立阶段，更新 README、学习记录和本交接文件。
 
 ## 文档入口
 
