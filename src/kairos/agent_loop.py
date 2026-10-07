@@ -48,25 +48,22 @@ def run_single_tool_turn(
         messages.append({"role": "assistant", "content": final_content})
         return final_content, messages
 
-    if len(tool_calls) != 1:
-        raise NotImplementedError("当前阶段一次只支持一个工具调用")
-
-    tool_call = tool_calls[0]
-    function = tool_call["function"]
-    tool_name = function["name"]
-    arguments = json.loads(function.get("arguments", "{}"))
-    if not isinstance(arguments, dict):
-        raise ValueError("工具参数必须是 JSON 对象")
-
     messages.append(_assistant_message(response, tool_calls))
-    result = tool_handlers[tool_name](**arguments)
-    messages.append(
-        {
-            "role": "tool",
-            "tool_call_id": tool_call["id"],
-            "content": json.dumps(result, ensure_ascii=False),
-        }
-    )
+    for tool_call in tool_calls:
+        function = tool_call["function"]
+        tool_name = function["name"]
+        arguments = json.loads(function.get("arguments", "{}"))
+        if not isinstance(arguments, dict):
+            raise ValueError("工具参数必须是 JSON 对象")
+
+        result = tool_handlers[tool_name](**arguments)
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call["id"],
+                "content": json.dumps(result, ensure_ascii=False),
+            }
+        )
 
     final_response = model.complete(messages=messages, tools=tool_schemas)
     if final_response.get("tool_calls"):

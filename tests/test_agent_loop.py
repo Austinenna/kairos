@@ -1,7 +1,5 @@
 import json
 
-import pytest
-
 from kairos.agent_loop import run_single_tool_turn
 
 
@@ -100,23 +98,35 @@ def test_single_tool_turn_preserves_reasoning_content_in_assistant_message():
     assert updated_messages[1]["reasoning_content"] == "需要先创建待办。"
 
 
-def test_single_tool_turn_rejects_multiple_tool_calls_for_now():
+def test_single_tool_turn_executes_multiple_tool_calls_in_order():
     model = FakeModel(
         [
             {
                 "content": None,
                 "tool_calls": [
-                    {"id": "call_1", "function": {"name": "first", "arguments": "{}"}},
-                    {"id": "call_2", "function": {"name": "second", "arguments": "{}"}},
+                    {"id": "call_1", "function": {"name": "first", "arguments": '{"value": 1}'}},
+                    {"id": "call_2", "function": {"name": "second", "arguments": '{"value": 2}'}},
                 ],
-            }
+            },
+            {"content": "两个操作都完成了。", "tool_calls": []},
         ]
     )
+    called = []
 
-    with pytest.raises(NotImplementedError, match="一个工具调用"):
-        run_single_tool_turn(
-            [{"role": "user", "content": "执行两个操作"}],
-            model,
-            {},
-            [],
-        )
+    def handler(name):
+        def run(**arguments):
+            called.append((name, arguments))
+            return {"name": name, "value": arguments["value"]}
+
+        return run
+
+    final_content, messages = run_single_tool_turn(
+        [{"role": "user", "content": "执行两个操作"}],
+        model,
+        {"first": handler("first"), "second": handler("second")},
+        [],
+    )
+
+    assert final_content == "两个操作都完成了。"
+    assert called == [("first", {"value": 1}), ("second", {"value": 2})]
+    assert [message["role"] for message in messages] == ["user", "assistant", "tool", "tool", "assistant"]
