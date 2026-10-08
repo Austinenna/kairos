@@ -80,3 +80,25 @@ def test_complete_normalizes_tool_call_and_reasoning_content():
             }
         ],
     }
+
+
+def test_complete_normalizes_usage_and_finish_reason():
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content="完成", tool_calls=[]),
+            )
+        ],
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=4, total_tokens=14),
+    )
+    model = DeepSeekModel(settings(), client=FakeClient(response))
+
+    result = model.complete(messages=[], tools=[])
+
+    assert result == {
+        "content": "完成",
+        "tool_calls": [],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+        "finish_reason": "stop",
+    }

@@ -339,3 +339,39 @@ def test_single_tool_turn_counts_a_batch_as_one_tool_round():
 def test_single_tool_turn_requires_positive_max_tool_rounds():
     with pytest.raises(ValueError, match="大于或等于 1"):
         run_single_tool_turn([], FakeModel([]), {}, [], max_tool_rounds=0)
+
+
+def test_single_tool_turn_emits_jsonl_events_when_logger_is_provided():
+    model = FakeModel(
+        [
+            {
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "demo", "arguments": "{}"}},
+                ],
+                "usage": {"total_tokens": 12},
+            },
+            {"content": "完成。", "tool_calls": []},
+        ]
+    )
+    events = []
+
+    run_single_tool_turn(
+        [{"role": "user", "content": "记录日志"}],
+        model,
+        {"demo": lambda: {"ok": True}},
+        [],
+        logger=events.append,
+    )
+
+    assert [event["event"] for event in events] == [
+        "model_request",
+        "model_response",
+        "tool_result",
+        "model_request",
+        "model_response",
+    ]
+    assert events[0]["messages"] == [{"role": "user", "content": "记录日志"}]
+    assert events[1]["usage"] == {"total_tokens": 12}
+    assert events[2]["tool_call_id"] == "call_1"
+    assert events[2]["result"] == '{"ok": true}'

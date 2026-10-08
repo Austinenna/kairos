@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from kairos.agent_app import run_cli, run_prompt
@@ -35,6 +36,22 @@ def test_run_prompt_wires_model_to_sqlite_and_tool_schemas(tmp_path):
     assert answer == "已加入待办。"
     assert [message["role"] for message in messages] == ["system", "user", "assistant", "tool", "assistant"]
     assert model.calls[0]["tools"][0]["function"]["name"] == "add_todo"
+
+
+def test_run_prompt_can_write_jsonl_observability_log(tmp_path):
+    model = FakeModel()
+    log_path = tmp_path / "logs" / "agent.jsonl"
+
+    run_prompt("加一个待办", model=model, db_path=tmp_path / "kairos.sqlite3", log_path=log_path)
+
+    events = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    assert [event["event"] for event in events] == [
+        "model_request",
+        "model_response",
+        "tool_result",
+        "model_request",
+        "model_response",
+    ]
 
 
 class FakeCompletions:

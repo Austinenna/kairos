@@ -10,6 +10,7 @@ from typing import Any
 from .agent_loop import Model, run_single_tool_turn
 from .config import PROJECT_ROOT, Settings
 from .model import DeepSeekModel
+from .observability import JsonlLogger
 from .todos import add_todo, complete_todo, initialize_database, list_todos, update_todo
 from .tool_schemas import TODO_TOOL_SCHEMAS
 
@@ -28,7 +29,13 @@ def build_tool_handlers(connection: Any) -> dict[str, Any]:
     }
 
 
-def run_prompt(prompt: str, *, model: Model, db_path: str | Path) -> tuple[str, list[dict]]:
+def run_prompt(
+    prompt: str,
+    *,
+    model: Model,
+    db_path: str | Path,
+    log_path: str | Path | None = None,
+) -> tuple[str, list[dict]]:
     """用传入的模型执行一轮待办 Agent 请求。"""
     connection = initialize_database(db_path)
     try:
@@ -41,17 +48,23 @@ def run_prompt(prompt: str, *, model: Model, db_path: str | Path) -> tuple[str, 
             model,
             build_tool_handlers(connection),
             TODO_TOOL_SCHEMAS,
+            logger=JsonlLogger(log_path) if log_path else None,
         )
     finally:
         connection.close()
 
 
 def run_cli(
-    prompt: str, *, settings: Settings | None = None, client: Any | None = None, db_path: str | Path | None = None
+    prompt: str,
+    *,
+    settings: Settings | None = None,
+    client: Any | None = None,
+    db_path: str | Path | None = None,
+    log_path: str | Path | None = None,
 ) -> str:
     """初始化真实 DeepSeek 模型并执行一轮请求。"""
     settings = settings or Settings()
     model = DeepSeekModel(settings, client=client)
     database_path = db_path or PROJECT_ROOT / "data" / "kairos.sqlite3"
-    answer, _ = run_prompt(prompt, model=model, db_path=database_path)
+    answer, _ = run_prompt(prompt, model=model, db_path=database_path, log_path=log_path)
     return answer

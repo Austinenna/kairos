@@ -6,7 +6,8 @@
 
 import json
 from collections.abc import Callable, Mapping
-from typing import Protocol
+from time import perf_counter
+from typing import Any, Protocol
 
 
 class Model(Protocol):
@@ -16,6 +17,7 @@ class Model(Protocol):
 
 
 ToolHandler = Callable[..., object]
+EventLogger = Callable[[dict[str, Any]], None]
 
 
 class AgentLoopLimitError(RuntimeError):
@@ -69,6 +71,7 @@ def run_single_tool_turn(
     tool_schemas: list[dict],
     *,
     max_tool_rounds: int = 8,
+    logger: EventLogger | None = None,
 ) -> tuple[str, list[dict]]:
     """执行可包含多轮、多工具调用的 Agent 回合。
 
@@ -81,8 +84,46 @@ def run_single_tool_turn(
         raise ValueError("max_tool_rounds 必须大于或等于 1")
 
     tool_rounds = 0
+    request_number = 0
     while True:
-        response = model.complete(messages=messages, tools=tool_schemas)
+        request_number += 1
+        if logger:
+            logger(
+                {
+                    "event": "model_request",
+                    "request_number": request_number,
+                    "tool_round": tool_rounds,
+                    "messages": list(messages),
+                    "tools": list(tool_schemas),
+                }
+            )
+
+        model_started = perf_counter()
+        try:
+            response = model.complete(messages=messages, tools=tool_schemas)
+        except Exception as error:
+            if logger:
+                logger(
+                    {
+                        "event": "model_error",
+                        "request_number": request_number,
+                        "tool_round": tool_rounds,
+                        "error": {"type": type(error).__name__, "message": str(error)},
+                        "duration_ms": round((perf_counter() - model_started) * 1000, 3),
+                    }
+                )
+            raise
+        if logger:
+            logger(
+                {
+                    "event": "model_response",
+                    "request_number": request_number,
+                    "tool_round": tool_rounds,
+                    "response": response,
+                    "usage": response.get("usage"),
+                    "duration_ms": round((perf_counter() - model_started) * 1000, 3),
+                }
+            )
         tool_calls = response.get("tool_calls") or []
         if not tool_calls:
             final_content = response.get("content") or ""
@@ -97,10 +138,26 @@ def run_single_tool_turn(
         for tool_call in tool_calls:
             if "id" not in tool_call:
                 raise ValueError("工具调用缺少 id，无法回传错误结果")
+            function = tool_call.get("function", {})
+            result_started = perf_counter()
+            result_content = _execute_tool(tool_call, tool_handlers)
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tool_call["id"],
-                    "content": _execute_tool(tool_call, tool_handlers),
+                    "content": result_content,
                 }
             )
+            if logger:
+                logger(
+                    {
+                        "event": "tool_result",
+                        "request_number": request_number,
+                        "tool_round": tool_rounds,
+                        "tool_call_id": tool_call["id"],
+                        "tool_name": function.get("name"),
+                        "arguments": function.get("arguments"),
+                        "result": result_content,
+                        "duration_ms": round((perf_counter() - result_started) * 1000, 3),
+                    }
+                )

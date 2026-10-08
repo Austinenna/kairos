@@ -8,6 +8,7 @@
 """
 
 import argparse
+from pathlib import Path
 
 from kairos.agent_app import run_cli
 
@@ -15,6 +16,7 @@ from kairos.agent_app import run_cli
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="用真实 DeepSeek 模型调试 Kairos 待办工具循环")
     parser.add_argument("prompt", nargs="*", help="本轮要发送给 Kairos 的问题；省略时从 stdin 读取")
+    parser.add_argument("--log-path", type=Path, help="把本轮 Agent 事件追加写入 JSONL 文件")
     args = parser.parse_args(argv)
     prompt = " ".join(args.prompt).strip()
     if not prompt:
@@ -22,7 +24,7 @@ def main(argv: list[str] | None = None) -> None:
     if not prompt:
         parser.error("请输入要发送的问题")
 
-    print(run_cli(prompt))
+    print(run_cli(prompt, log_path=args.log_path))
 
 
 if __name__ == "__main__":

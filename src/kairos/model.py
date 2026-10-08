@@ -68,6 +68,16 @@ class DeepSeekModel:
             "content": _field(message, "content"),
             "tool_calls": tool_calls,
         }
+        usage = _field(response, "usage")
+        if usage is not None:
+            result["usage"] = {
+                "prompt_tokens": _field(usage, "prompt_tokens"),
+                "completion_tokens": _field(usage, "completion_tokens"),
+                "total_tokens": _field(usage, "total_tokens"),
+            }
+        finish_reason = _field(choices[0], "finish_reason")
+        if finish_reason is not None:
+            result["finish_reason"] = finish_reason
         reasoning_content = _field(message, "reasoning_content")
         if reasoning_content is not None:
             result["reasoning_content"] = reasoning_content
