@@ -44,13 +44,19 @@ uv run python scripts/experiment_tool_errors.py
 
 VSCode 的运行和调试配置名为 `Kairos Tool Error Experiment`，默认运行 `handler-error`。想换案例时，把 `.vscode/launch.json` 里的 `args` 改成 `invalid-json` 或 `unknown-tool`，再按 F5；可在 `agent_loop.py` 的 `_execute_tool` 内设置断点逐步查看 `tool_call`、`arguments` 和错误结果。
 
+真实 Agent 也可以写本地 JSONL 观测日志：
+
+```bash
+uv run python scripts/debug_agent.py --log-path /tmp/kairos-agent.jsonl "请查询当前所有未完成待办"
+```
+
 待办数据保存在本地 `data/kairos.sqlite3`；该命令需要 `.env` 中的 `DEEPSEEK_API_KEY`。
 命令行脚本位于 `scripts/`，正式的 Agent 编排代码位于 `src/kairos/agent_app.py`。
 
 ## 进度
 
 - [x] 阶段 0：多轮对话、流式输出、token 和费用统计
-- [ ] 阶段 1：手写 agent 循环 + 待办工具（已完成 SQLite、Schema、同一响应的多工具调用、跨轮继续调用、错误回传、轮数限制和真实模型调试链路；JSONL 观测日志待补）
+- [x] 阶段 1：手写 agent 循环 + 待办工具（SQLite、Schema、多工具调用、跨轮继续调用、错误回传、轮数限制、JSONL 观测日志和真实模型调试链路）
 - [ ] 阶段 2：工具设计与安全
 - [ ] 阶段 3：记忆与上下文管理
 - [ ] 阶段 4：主动性
