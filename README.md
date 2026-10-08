@@ -34,7 +34,7 @@ uv run kairos
 uv run python scripts/debug_agent.py "把学习 Agent 加入待办"
 ```
 
-修改错误回传前，可以先运行离线实验观察当前行为，不请求真实模型：
+可以运行离线实验观察工具错误回传，不请求真实模型：
 
 ```bash
 uv run python scripts/experiment_tool_errors.py
@@ -42,13 +42,15 @@ uv run python scripts/experiment_tool_errors.py
 
 它会依次模拟非法 JSON、未知工具和工具函数异常，并打印异常类型、模型调用次数和停止时的 `messages`。
 
+VSCode 的运行和调试配置名为 `Kairos Tool Error Experiment`，默认运行 `handler-error`。想换案例时，把 `.vscode/launch.json` 里的 `args` 改成 `invalid-json` 或 `unknown-tool`，再按 F5；可在 `agent_loop.py` 的 `_execute_tool` 内设置断点逐步查看 `tool_call`、`arguments` 和错误结果。
+
 待办数据保存在本地 `data/kairos.sqlite3`；该命令需要 `.env` 中的 `DEEPSEEK_API_KEY`。
 命令行脚本位于 `scripts/`，正式的 Agent 编排代码位于 `src/kairos/agent_app.py`。
 
 ## 进度
 
 - [x] 阶段 0：多轮对话、流式输出、token 和费用统计
-- [ ] 阶段 1：手写 agent 循环 + 待办工具（已完成 SQLite、Schema、同一响应的多工具调用、跨轮继续调用和真实模型调试链路；错误回传和轮数限制待补）
+- [ ] 阶段 1：手写 agent 循环 + 待办工具（已完成 SQLite、Schema、同一响应的多工具调用、跨轮继续调用、错误回传和真实模型调试链路；轮数限制待补）
 - [ ] 阶段 2：工具设计与安全
 - [ ] 阶段 3：记忆与上下文管理
 - [ ] 阶段 4：主动性

@@ -1,7 +1,7 @@
 """离线观察工具报错行为的实验脚本。
 
 这个脚本故意伪造模型返回的工具调用，不访问真实 API、不连接 SQLite。
-它用于在修改错误回传逻辑前，记录当前程序遇到错误时的基线行为。
+它用于观察错误回传逻辑：第一轮故意出错，第二轮模拟模型读取错误后的最终回答。
 
 运行：
 
@@ -20,15 +20,15 @@ from kairos.agent_loop import run_single_tool_turn
 
 
 class FakeModel:
-    """每次返回同一个工具调用，并记录模型被调用了几次。"""
+    """按顺序返回预设响应，并记录模型被调用了几次。"""
 
-    def __init__(self, response: dict[str, Any]):
-        self.response = response
+    def __init__(self, responses: list[dict[str, Any]]):
+        self.responses = iter(responses)
         self.calls: list[list[dict]] = []
 
     def complete(self, *, messages: list[dict], tools: list[dict]) -> dict:
         self.calls.append(list(messages))
-        return self.response
+        return next(self.responses)
 
 
 def _tool_call(name: str, arguments: str) -> dict[str, Any]:
@@ -70,16 +70,17 @@ def _cases() -> dict[str, tuple[str, dict[str, Any], dict[str, Callable[..., obj
 
 def run_case(case_name: str) -> None:
     title, response, handlers = _cases()[case_name]
-    model = FakeModel(response)
+    model = FakeModel(
+        [
+            response,
+            {"content": "我收到工具错误了。", "tool_calls": []},
+        ]
+    )
     messages = [{"role": "user", "content": title}]
 
     print(f"=== {case_name}：{title} ===")
-    try:
-        answer, messages = run_single_tool_turn(messages, model, handlers, [])
-    except Exception as error:
-        print(f"异常：{type(error).__name__}: {error}")
-    else:
-        print(f"返回：{answer}")
+    answer, messages = run_single_tool_turn(messages, model, handlers, [])
+    print(f"最终回答：{answer}")
     print(f"model.complete 调用次数：{len(model.calls)}")
     print("停止时的 messages：")
     print(json.dumps(messages, ensure_ascii=False, indent=2))
