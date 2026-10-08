@@ -8,9 +8,9 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 
 - 项目按正式应用维护，当前仓库用于持续开发。
 - 当前代码完成阶段 0：命令行多轮对话、流式输出、思考模式切换、消息历史查看、文件输入，以及 token/费用统计。
-- `src/kairos/config.py` 从项目根目录 `.env` 和环境变量读取 DeepSeek 配置；`src/kairos/chat.py` 维护消息列表并调用 OpenAI 兼容接口；`src/kairos/pricing.py` 负责用量转换和费用估算。
+- `src/kairos/config.py` 从项目根目录 `.env` 和环境变量读取模型协议配置；`src/kairos/chat.py` 维护消息列表并调用 OpenAI 兼容接口；`src/kairos/pricing.py` 负责用量转换和费用估算。
 - `tests/test_pricing.py` 覆盖高峰时段、缓存输入计费和未知模型价格。
-- 阶段 1 已完成 s1-1 至 s1-9：SQLite 待办函数、工具 Schema、支持同一响应多个工具调用、跨轮继续调用、工具错误回传、最大工具响应轮数和 JSONL 观测日志的手写循环，以及把 DeepSeek/OpenAI 兼容格式和 Claude/Anthropic Messages 格式转换到同一内部接口的模型适配层。可复用编排位于 `src/kairos/agent_app.py`，调试脚本单独放在 `scripts/`。
+- 阶段 1 已完成 s1-1 至 s1-9：SQLite 待办函数、工具 Schema、支持同一响应多个工具调用、跨轮继续调用、工具错误回传、最大工具响应轮数和 JSONL 观测日志的手写循环，以及把 OpenAI 兼容格式和 Anthropic Messages 格式转换到同一内部接口的模型适配层。`agent_app.run_cli` 已通过 `KAIROS_PROVIDER` 选择适配器；可复用编排位于 `src/kairos/agent_app.py`，调试脚本单独放在 `scripts/`。
 - 阶段 1 的 s1-10（同一批请求在两家模型上运行并比较工具调用格式和行为）尚未完成；阶段 2 尚未开始。
 - `scripts/experiment_tool_errors.py` 是离线错误实验入口：它用 Fake Model 模拟非法 JSON、未知工具和工具函数异常，观察错误 `tool` 消息和后续模型回答，不访问真实 API，也不修改 SQLite。
 - `src/kairos/observability.py` 提供本地 JSONL 日志；通过 `--log-path` 显式启用，默认不写日志。
@@ -18,7 +18,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 ## 正常运行流程
 
 1. 安装 Python 3.13、`uv`。
-2. 复制 `.env.example` 为 `.env`，填入 `DEEPSEEK_API_KEY`；可按需调整 `DEEPSEEK_BASE_URL` 和 `KAIROS_MODEL`。
+2. 复制 `.env.example` 为 `.env`，设置 `KAIROS_PROVIDER`；选择 `openai` 时填入 OpenAI 兼容接口的 key，选择 `anthropic` 时填入 `ANTHROPIC_API_KEY` 和对应的 `KAIROS_MODEL`。
 3. 在项目根目录运行 `uv run kairos`，输入 `/help` 查看命令。
 4. 运行 `uv run pytest` 和 `uv run ruff check .` 做基础检查。
 5. 运行 `uv run python scripts/experiment_tool_errors.py` 观察工具错误回传；如果本机 `uv` 受缓存权限影响，可直接运行 `.venv/bin/python scripts/experiment_tool_errors.py`。
@@ -36,9 +36,9 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 
 已验证：迁移前后项目文件校验通过；Python 环境中的 3 项定价测试通过。
 
-已验证：Fake Model 覆盖消息顺序、同一响应多个工具调用、工具执行后的跨轮继续调用、非法 JSON/未知工具/工具函数异常的错误回传、最大轮数和批次计数，以及 JSONL 事件；Fake SDK Client 覆盖 DeepSeek 响应归一化、usage/finish_reason 和真实适配器接入 SQLite 工具循环的组合路径。
+已验证：Fake Model 覆盖消息顺序、同一响应多个工具调用、工具执行后的跨轮继续调用、非法 JSON/未知工具/工具函数异常的错误回传、最大轮数和批次计数，以及 JSONL 事件；Fake SDK Client 覆盖 OpenAI 兼容响应归一化、Anthropic Messages 响应归一化、usage/finish_reason 和两种适配器接入 SQLite 工具循环的组合路径。
 
-未验证：Claude 适配器的真实 SDK/API 调用、两家模型的真实对比、`debug_agent` 的真实 API 调用、流式显示、思考模式、文件输入和完整命令行交互；Claude 适配器当前用 Fake Client 验证请求转换和响应归一化，真实联调需要安装 `anthropic`、配置密钥和网络后单独验收。
+未验证：Anthropic 适配器的真实 SDK/API 调用、两家模型的真实对比、`debug_agent` 的真实 API 调用、流式显示、思考模式、文件输入和完整命令行交互；Anthropic 适配器当前用 Fake Client 验证请求转换和响应归一化，真实联调需要安装 `anthropic`、配置密钥和网络后单独验收。阶段 0 的 `chat.py` 仍未接入这套 provider 选择。
 
 ## 下一步
 

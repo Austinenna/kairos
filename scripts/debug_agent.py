@@ -14,7 +14,7 @@ from kairos.agent_app import run_cli
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="用真实 DeepSeek 模型调试 Kairos 待办工具循环")
+    parser = argparse.ArgumentParser(description="用配置的模型协议调试 Kairos 待办工具循环")
     parser.add_argument("prompt", nargs="*", help="本轮要发送给 Kairos 的问题；省略时从 stdin 读取")
     parser.add_argument("--log-path", type=Path, help="把本轮 Agent 事件追加写入 JSONL 文件")
     args = parser.parse_args(argv)

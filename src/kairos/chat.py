@@ -97,10 +97,16 @@ def run() -> None:
     try:
         settings = Settings()
     except ValidationError:
-        console.print("[red]没有找到 DEEPSEEK_API_KEY。[/]把 .env.example 复制成 .env，填入你的 key 再运行。")
+        console.print("[red]配置无效。[/]把 .env.example 复制成 .env，并检查模型配置后再运行。")
         return
 
-    client = OpenAI(api_key=settings.deepseek_api_key, base_url=settings.deepseek_base_url)
+    if not settings.openai_api_key:
+        console.print(
+            "[red]没有找到 OPENAI_API_KEY 或 DEEPSEEK_API_KEY。[/]把 .env.example 复制成 .env，填入你的 key 再运行。"
+        )
+        return
+
+    client = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
     model = settings.kairos_model
     system_prompt = DEFAULT_SYSTEM_PROMPT
     messages: list[dict] = [{"role": "system", "content": system_prompt}]

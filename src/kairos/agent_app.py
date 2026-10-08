@@ -9,7 +9,7 @@ from typing import Any
 
 from .agent_loop import Model, run_single_tool_turn
 from .config import PROJECT_ROOT, Settings
-from .model import DeepSeekModel
+from .model import AnthropicMessagesModel, OpenAICompatibleModel
 from .observability import JsonlLogger
 from .todos import add_todo, complete_todo, initialize_database, list_todos, update_todo
 from .tool_schemas import TODO_TOOL_SCHEMAS
@@ -27,6 +27,30 @@ def build_tool_handlers(connection: Any) -> dict[str, Any]:
         "update_todo": partial(update_todo, connection),
         "complete_todo": partial(complete_todo, connection),
     }
+
+
+def build_model(settings: Settings, client: Any | None = None) -> Model:
+    """根据配置选择协议适配器；工具循环不需要知道具体供应商。"""
+    provider = getattr(settings, "kairos_provider", "openai")
+    if provider == "openai":
+        extra_body = {"thinking": {"type": "disabled"}}
+        if not getattr(settings, "kairos_model", "").startswith("deepseek"):
+            extra_body = None
+        return OpenAICompatibleModel(
+            model=settings.kairos_model,
+            api_key=getattr(settings, "openai_api_key", None) or getattr(settings, "deepseek_api_key", None),
+            base_url=getattr(settings, "openai_base_url", None) or getattr(settings, "deepseek_base_url", None),
+            client=client,
+            extra_body=extra_body,
+        )
+    if provider == "anthropic":
+        return AnthropicMessagesModel(
+            settings.kairos_model,
+            api_key=getattr(settings, "anthropic_api_key", None),
+            client=client,
+            max_tokens=getattr(settings, "anthropic_max_tokens", 4096),
+        )
+    raise ValueError(f"不支持的模型协议：{provider}")
 
 
 def run_prompt(
@@ -62,9 +86,9 @@ def run_cli(
     db_path: str | Path | None = None,
     log_path: str | Path | None = None,
 ) -> str:
-    """初始化真实 DeepSeek 模型并执行一轮请求。"""
+    """根据配置初始化模型适配器并执行一轮请求。"""
     settings = settings or Settings()
-    model = DeepSeekModel(settings, client=client)
+    model = build_model(settings, client=client)
     database_path = db_path or PROJECT_ROOT / "data" / "kairos.sqlite3"
     answer, _ = run_prompt(prompt, model=model, db_path=database_path, log_path=log_path)
     return answer

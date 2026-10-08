@@ -1,7 +1,7 @@
 """把不同模型的请求和响应转换成 Agent 循环使用的统一格式。
 
-``agent_loop`` 只依赖一个很小的 ``Model.complete`` 接口。本模块把 DeepSeek 的
-OpenAI 兼容格式和 Claude 的 Anthropic Messages 格式都转换成同一套内部字典，
+``agent_loop`` 只依赖一个很小的 ``Model.complete`` 接口。本模块把 OpenAI 兼容格式
+和 Anthropic Messages 格式都转换成同一套内部字典，
 因此循环本身不需要知道供应商差异。
 """
 
@@ -10,8 +10,6 @@ from collections.abc import Mapping
 from typing import Any
 
 from openai import OpenAI
-
-from .config import Settings
 
 
 def _field(value: object, name: str, default: Any = None) -> Any:
@@ -39,23 +37,27 @@ def _normalize_tool_call(tool_call: object) -> dict:
     }
 
 
-class DeepSeekModel:
-    """使用 OpenAI SDK 调用 DeepSeek，并返回循环使用的统一字典。"""
+class OpenAICompatibleModel:
+    """调用 OpenAI 兼容接口，并返回循环使用的统一字典。"""
 
-    def __init__(self, settings: Settings, client: Any | None = None):
-        self.model = settings.kairos_model
-        self.client = client or OpenAI(
-            api_key=settings.deepseek_api_key,
-            base_url=settings.deepseek_base_url,
-        )
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        client: Any | None = None,
+        extra_body: dict[str, Any] | None = None,
+    ):
+        self.model = model
+        self.extra_body = extra_body
+        self.client = client or OpenAI(api_key=api_key, base_url=base_url)
 
     def complete(self, *, messages: list[dict], tools: list[dict]) -> dict:
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            tools=tools,
-            extra_body={"thinking": {"type": "disabled"}},
-        )
+        request = {"model": self.model, "messages": messages, "tools": tools}
+        if self.extra_body is not None:
+            request["extra_body"] = self.extra_body
+        response = self.client.chat.completions.create(**request)
         choices = _field(response, "choices", [])
         if not choices:
             raise ValueError("模型响应没有 choices")
@@ -86,7 +88,7 @@ class DeepSeekModel:
 
 
 def _anthropic_tools(tools: list[dict]) -> list[dict]:
-    """把 OpenAI 风格的函数工具定义转换成 Claude 的工具定义。"""
+    """把 OpenAI 风格的函数工具定义转换成 Anthropic 的工具定义。"""
     converted = []
     for tool in tools:
         function = tool.get("function", {})
@@ -153,7 +155,7 @@ def _anthropic_messages(messages: list[dict]) -> tuple[str | None, list[dict]]:
                 function = tool_call.get("function", {})
                 arguments = json.loads(function.get("arguments", "{}"))
                 if not isinstance(arguments, dict):
-                    raise ValueError("Claude 工具调用参数必须是 JSON 对象")
+                    raise ValueError("Anthropic 工具调用参数必须是 JSON 对象")
                 content_blocks.append(
                     {
                         "type": "tool_use",
@@ -171,7 +173,7 @@ def _anthropic_messages(messages: list[dict]) -> tuple[str | None, list[dict]]:
     return ("\n\n".join(system_parts) or None), converted
 
 
-def _normalize_claude_response(response: object) -> dict:
+def _normalize_anthropic_response(response: object) -> dict:
     """把 Anthropic SDK 的 Message 响应转换成循环使用的统一字典。"""
     content = _field(response, "content", []) or []
     text_parts: list[str] = []
@@ -192,7 +194,7 @@ def _normalize_claude_response(response: object) -> dict:
             name = _field(block, "name")
             tool_input = _field(block, "input", {})
             if not call_id or not name or not isinstance(tool_input, Mapping):
-                raise ValueError("Claude 工具调用缺少 id、name 或对象参数")
+                raise ValueError("Anthropic 工具调用缺少 id、name 或对象参数")
             tool_calls.append(
                 {
                     "id": call_id,
@@ -204,7 +206,7 @@ def _normalize_claude_response(response: object) -> dict:
                 }
             )
         elif block_type not in {"redacted_thinking"}:
-            raise ValueError(f"Claude 返回了不支持的内容块：{block_type}")
+            raise ValueError(f"Anthropic 返回了不支持的内容块：{block_type}")
 
     result = {"content": "\n".join(text_parts) or None, "tool_calls": tool_calls}
     if reasoning_parts:
@@ -225,8 +227,8 @@ def _normalize_claude_response(response: object) -> dict:
     return result
 
 
-class ClaudeModel:
-    """使用 Anthropic Messages API，并输出与 ``DeepSeekModel`` 相同的字典。"""
+class AnthropicMessagesModel:
+    """使用 Anthropic Messages API，并输出统一的内部字典。"""
 
     def __init__(
         self,
@@ -244,7 +246,7 @@ class ClaudeModel:
         try:
             from anthropic import Anthropic
         except ModuleNotFoundError as error:
-            raise RuntimeError("使用 ClaudeModel 需要先安装 anthropic 包") from error
+            raise RuntimeError("使用 AnthropicMessagesModel 需要先安装 anthropic 包") from error
         self.client = Anthropic(api_key=api_key)
 
     def complete(self, *, messages: list[dict], tools: list[dict]) -> dict:
@@ -258,4 +260,4 @@ class ClaudeModel:
         if system is not None:
             request["system"] = system
         response = self.client.messages.create(**request)
-        return _normalize_claude_response(response)
+        return _normalize_anthropic_response(response)

@@ -67,6 +67,21 @@ class FakeClient:
         self.chat = SimpleNamespace(completions=FakeCompletions(responses))
 
 
+class FakeAnthropicMessages:
+    def __init__(self, responses):
+        self.responses = iter(responses)
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return next(self.responses)
+
+
+class FakeAnthropicClient:
+    def __init__(self, responses):
+        self.messages = FakeAnthropicMessages(responses)
+
+
 def test_run_cli_connects_real_adapter_to_tool_loop(tmp_path):
     responses = [
         SimpleNamespace(
@@ -101,3 +116,33 @@ def test_run_cli_connects_real_adapter_to_tool_loop(tmp_path):
     )
 
     assert answer == "已完成。"
+
+
+def test_run_cli_can_select_anthropic_messages_adapter(tmp_path):
+    client = FakeAnthropicClient(
+        [
+            {
+                "content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "add_todo", "input": {"title": "Anthropic 链路"}}
+                ]
+            },
+            {"content": [{"type": "text", "text": "已加入待办。"}]},
+        ]
+    )
+    settings = SimpleNamespace(
+        kairos_provider="anthropic",
+        kairos_model="claude-test",
+        anthropic_api_key="test-key",
+        anthropic_max_tokens=128,
+    )
+
+    answer = run_cli(
+        "加一个待办",
+        settings=settings,
+        client=client,
+        db_path=tmp_path / "kairos.sqlite3",
+    )
+
+    assert answer == "已加入待办。"
+    assert client.messages.calls[0]["model"] == "claude-test"
+    assert client.messages.calls[0]["max_tokens"] == 128

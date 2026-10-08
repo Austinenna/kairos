@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 
-from kairos.model import ClaudeModel, DeepSeekModel
+from kairos.model import AnthropicMessagesModel, OpenAICompatibleModel
 
 
 class FakeCompletions:
@@ -34,19 +34,17 @@ class FakeAnthropicClient:
         self.messages = FakeMessages(response)
 
 
-def settings():
-    return SimpleNamespace(
-        kairos_model="deepseek-flash",
-        deepseek_api_key="test-key",
-        deepseek_base_url="https://example.test",
-    )
-
-
 def test_complete_normalizes_direct_answer_and_forwards_request():
     client = FakeClient(
         SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="你好", tool_calls=[]))])
     )
-    model = DeepSeekModel(settings(), client=client)
+    model = OpenAICompatibleModel(
+        model="deepseek-flash",
+        api_key="test-key",
+        base_url="https://example.test",
+        client=client,
+        extra_body={"thinking": {"type": "disabled"}},
+    )
     messages = [{"role": "user", "content": "你好"}]
     tools = [{"type": "function", "function": {"name": "list_todos"}}]
 
@@ -81,7 +79,13 @@ def test_complete_normalizes_tool_call_and_reasoning_content():
             )
         ]
     )
-    model = DeepSeekModel(settings(), client=FakeClient(response))
+    model = OpenAICompatibleModel(
+        model="deepseek-flash",
+        api_key="test-key",
+        base_url="https://example.test",
+        client=FakeClient(response),
+        extra_body={"thinking": {"type": "disabled"}},
+    )
 
     result = model.complete(messages=[], tools=[])
 
@@ -108,7 +112,13 @@ def test_complete_normalizes_usage_and_finish_reason():
         ],
         usage=SimpleNamespace(prompt_tokens=10, completion_tokens=4, total_tokens=14),
     )
-    model = DeepSeekModel(settings(), client=FakeClient(response))
+    model = OpenAICompatibleModel(
+        model="deepseek-flash",
+        api_key="test-key",
+        base_url="https://example.test",
+        client=FakeClient(response),
+        extra_body={"thinking": {"type": "disabled"}},
+    )
 
     result = model.complete(messages=[], tools=[])
 
@@ -120,7 +130,7 @@ def test_complete_normalizes_usage_and_finish_reason():
     }
 
 
-def test_claude_complete_converts_request_and_normalizes_text_response():
+def test_anthropic_complete_converts_request_and_normalizes_text_response():
     client = FakeAnthropicClient(
         SimpleNamespace(
             content=[SimpleNamespace(type="text", text="已查到。")],
@@ -128,7 +138,7 @@ def test_claude_complete_converts_request_and_normalizes_text_response():
             stop_reason="end_turn",
         )
     )
-    model = ClaudeModel("claude-test", client=client, max_tokens=128)
+    model = AnthropicMessagesModel("claude-test", client=client, max_tokens=128)
     messages = [
         {"role": "system", "content": "你是 Kairos。"},
         {"role": "user", "content": "查一下待办"},
@@ -169,7 +179,7 @@ def test_claude_complete_converts_request_and_normalizes_text_response():
     ]
 
 
-def test_claude_complete_converts_tool_history_and_normalizes_tool_use():
+def test_anthropic_complete_converts_tool_history_and_normalizes_tool_use():
     client = FakeAnthropicClient(
         {
             "content": [
@@ -179,7 +189,7 @@ def test_claude_complete_converts_tool_history_and_normalizes_tool_use():
             ]
         }
     )
-    model = ClaudeModel("claude-test", client=client)
+    model = AnthropicMessagesModel("claude-test", client=client)
     messages = [
         {"role": "user", "content": "查待办"},
         {
