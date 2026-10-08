@@ -1,7 +1,7 @@
 """阶段 1 的最小单工具 Agent 循环。
 
 这里先使用接近 OpenAI 的统一响应形状，方便用 Fake Model 测试消息顺序。
-模型适配层和多工具、错误回传、最大轮数会在后续任务中加入。
+当前支持多工具、跨轮调用和工具错误回传；最大轮数会在后续任务中加入。
 """
 
 import json
@@ -30,6 +30,34 @@ def _assistant_message(response: dict, tool_calls: list[dict]) -> dict:
     return message
 
 
+def _error_content(error: Exception) -> str:
+    """把工具异常转换成模型可以继续处理的 JSON 字符串。"""
+    return json.dumps(
+        {
+            "error": {
+                "type": type(error).__name__,
+                "message": str(error),
+            }
+        },
+        ensure_ascii=False,
+    )
+
+
+def _execute_tool(tool_call: dict, tool_handlers: Mapping[str, ToolHandler]) -> str:
+    """执行单个工具；参数或函数错误都作为工具结果返回。"""
+    try:
+        function = tool_call["function"]
+        tool_name = function["name"]
+        arguments = json.loads(function.get("arguments", "{}"))
+        if not isinstance(arguments, dict):
+            raise ValueError("工具参数必须是 JSON 对象")
+
+        result = tool_handlers[tool_name](**arguments)
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as error:
+        return _error_content(error)
+
+
 def run_single_tool_turn(
     messages: list[dict],
     model: Model,
@@ -51,17 +79,12 @@ def run_single_tool_turn(
 
         messages.append(_assistant_message(response, tool_calls))
         for tool_call in tool_calls:
-            function = tool_call["function"]
-            tool_name = function["name"]
-            arguments = json.loads(function.get("arguments", "{}"))
-            if not isinstance(arguments, dict):
-                raise ValueError("工具参数必须是 JSON 对象")
-
-            result = tool_handlers[tool_name](**arguments)
+            if "id" not in tool_call:
+                raise ValueError("工具调用缺少 id，无法回传错误结果")
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tool_call["id"],
-                    "content": json.dumps(result, ensure_ascii=False),
+                    "content": _execute_tool(tool_call, tool_handlers),
                 }
             )

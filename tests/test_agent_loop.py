@@ -172,3 +172,115 @@ def test_single_tool_turn_continues_after_tool_result_until_final_answer():
         "tool",
         "assistant",
     ]
+
+
+def test_single_tool_turn_returns_invalid_json_as_tool_error():
+    model = FakeModel(
+        [
+            {
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "demo", "arguments": "{not-json"}},
+                ],
+            },
+            {"content": "参数有误，我没有执行这个工具。", "tool_calls": []},
+        ]
+    )
+
+    answer, messages = run_single_tool_turn(
+        [{"role": "user", "content": "测试非法参数"}],
+        model,
+        {"demo": lambda: {"ok": True}},
+        [],
+    )
+
+    assert answer == "参数有误，我没有执行这个工具。"
+    assert json.loads(messages[2]["content"]) == {
+        "error": {
+            "type": "JSONDecodeError",
+            "message": "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
+        }
+    }
+    assert messages[2]["tool_call_id"] == "call_1"
+    assert len(model.calls) == 2
+
+
+def test_single_tool_turn_returns_unknown_tool_as_tool_error():
+    model = FakeModel(
+        [
+            {
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "missing_tool", "arguments": "{}"}},
+                ],
+            },
+            {"content": "这个工具不存在。", "tool_calls": []},
+        ]
+    )
+
+    answer, messages = run_single_tool_turn(
+        [{"role": "user", "content": "测试未知工具"}],
+        model,
+        {},
+        [],
+    )
+
+    assert answer == "这个工具不存在。"
+    error = json.loads(messages[2]["content"])
+    assert error["error"]["type"] == "KeyError"
+    assert messages[2]["tool_call_id"] == "call_1"
+
+
+def test_single_tool_turn_returns_handler_error_as_tool_error():
+    def broken_handler():
+        raise ValueError("演示错误")
+
+    model = FakeModel(
+        [
+            {
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "demo", "arguments": "{}"}},
+                ],
+            },
+            {"content": "工具执行失败，我已经知道原因。", "tool_calls": []},
+        ]
+    )
+
+    answer, messages = run_single_tool_turn(
+        [{"role": "user", "content": "测试工具异常"}],
+        model,
+        {"demo": broken_handler},
+        [],
+    )
+
+    assert answer == "工具执行失败，我已经知道原因。"
+    assert json.loads(messages[2]["content"]) == {"error": {"type": "ValueError", "message": "演示错误"}}
+
+
+def test_single_tool_turn_continues_other_calls_after_one_tool_error():
+    called = []
+    model = FakeModel(
+        [
+            {
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_bad", "function": {"name": "bad", "arguments": "{not-json"}},
+                    {"id": "call_good", "function": {"name": "good", "arguments": "{}"}},
+                ],
+            },
+            {"content": "已处理这一批工具调用。", "tool_calls": []},
+        ]
+    )
+
+    answer, messages = run_single_tool_turn(
+        [{"role": "user", "content": "测试同批错误"}],
+        model,
+        {"good": lambda: called.append("good") or {"ok": True}},
+        [],
+    )
+
+    assert answer == "已处理这一批工具调用。"
+    assert called == ["good"]
+    assert json.loads(messages[2]["content"])["error"]["type"] == "JSONDecodeError"
+    assert json.loads(messages[3]["content"]) == {"ok": True}
