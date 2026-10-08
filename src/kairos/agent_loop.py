@@ -1,7 +1,7 @@
 """阶段 1 的最小单工具 Agent 循环。
 
 这里先使用接近 OpenAI 的统一响应形状，方便用 Fake Model 测试消息顺序。
-当前支持多工具、跨轮调用和工具错误回传；最大轮数会在后续任务中加入。
+当前支持多工具、跨轮调用、工具错误回传和最大工具响应轮数。
 """
 
 import json
@@ -16,6 +16,10 @@ class Model(Protocol):
 
 
 ToolHandler = Callable[..., object]
+
+
+class AgentLoopLimitError(RuntimeError):
+    """模型连续请求工具，超过了允许的工具响应轮数。"""
 
 
 def _assistant_message(response: dict, tool_calls: list[dict]) -> dict:
@@ -63,12 +67,20 @@ def run_single_tool_turn(
     model: Model,
     tool_handlers: Mapping[str, ToolHandler],
     tool_schemas: list[dict],
+    *,
+    max_tool_rounds: int = 8,
 ) -> tuple[str, list[dict]]:
     """执行可包含多轮、多工具调用的 Agent 回合。
 
     模型直接回答时函数返回；模型请求工具时，函数执行这一批工具，把 assistant
     工具调用和 tool 结果写回 messages，再次请求模型，直到模型给出最终回答。
+    ``max_tool_rounds`` 只统计包含工具调用的模型响应轮数，同一轮的多个工具
+    调用只计一次；超过上限后抛出 AgentLoopLimitError，避免无限循环。
     """
+    if max_tool_rounds < 1:
+        raise ValueError("max_tool_rounds 必须大于或等于 1")
+
+    tool_rounds = 0
     while True:
         response = model.complete(messages=messages, tools=tool_schemas)
         tool_calls = response.get("tool_calls") or []
@@ -76,6 +88,10 @@ def run_single_tool_turn(
             final_content = response.get("content") or ""
             messages.append({"role": "assistant", "content": final_content})
             return final_content, messages
+
+        if tool_rounds >= max_tool_rounds:
+            raise AgentLoopLimitError(f"工具调用超过最大轮数（{max_tool_rounds}）")
+        tool_rounds += 1
 
         messages.append(_assistant_message(response, tool_calls))
         for tool_call in tool_calls:

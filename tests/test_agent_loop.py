@@ -1,6 +1,8 @@
 import json
 
-from kairos.agent_loop import run_single_tool_turn
+import pytest
+
+from kairos.agent_loop import AgentLoopLimitError, run_single_tool_turn
 
 
 class FakeModel:
@@ -284,3 +286,56 @@ def test_single_tool_turn_continues_other_calls_after_one_tool_error():
     assert called == ["good"]
     assert json.loads(messages[2]["content"])["error"]["type"] == "JSONDecodeError"
     assert json.loads(messages[3]["content"]) == {"ok": True}
+
+
+def test_single_tool_turn_stops_after_max_tool_rounds():
+    response = {
+        "content": None,
+        "tool_calls": [
+            {"id": "call_loop", "function": {"name": "demo", "arguments": "{}"}},
+        ],
+    }
+    model = FakeModel([response, response, response])
+    called = []
+
+    with pytest.raises(AgentLoopLimitError, match="最大轮数（2）"):
+        run_single_tool_turn(
+            [{"role": "user", "content": "持续调用"}],
+            model,
+            {"demo": lambda: called.append("demo") or {"ok": True}},
+            [],
+            max_tool_rounds=2,
+        )
+
+    assert called == ["demo", "demo"]
+    assert len(model.calls) == 3
+
+
+def test_single_tool_turn_counts_a_batch_as_one_tool_round():
+    model = FakeModel(
+        [
+            {
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "first", "arguments": "{}"}},
+                    {"id": "call_2", "function": {"name": "second", "arguments": "{}"}},
+                ],
+            },
+            {"content": "完成。", "tool_calls": []},
+        ]
+    )
+
+    answer, _ = run_single_tool_turn(
+        [{"role": "user", "content": "执行一批工具"}],
+        model,
+        {"first": lambda: {"ok": 1}, "second": lambda: {"ok": 2}},
+        [],
+        max_tool_rounds=1,
+    )
+
+    assert answer == "完成。"
+
+
+def test_single_tool_turn_requires_positive_max_tool_rounds():
+    with pytest.raises(ValueError, match="大于或等于 1"):
+        run_single_tool_turn([], FakeModel([]), {}, [], max_tool_rounds=0)
