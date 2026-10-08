@@ -34,6 +34,14 @@ uv run kairos
 uv run python scripts/debug_agent.py "把学习 Agent 加入待办"
 ```
 
+修改错误回传前，可以先运行离线实验观察当前行为，不请求真实模型：
+
+```bash
+uv run python scripts/experiment_tool_errors.py
+```
+
+它会依次模拟非法 JSON、未知工具和工具函数异常，并打印异常类型、模型调用次数和停止时的 `messages`。
+
 待办数据保存在本地 `data/kairos.sqlite3`；该命令需要 `.env` 中的 `DEEPSEEK_API_KEY`。
 命令行脚本位于 `scripts/`，正式的 Agent 编排代码位于 `src/kairos/agent_app.py`。
 

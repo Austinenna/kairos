@@ -11,6 +11,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 - `src/kairos/config.py` 从项目根目录 `.env` 和环境变量读取 DeepSeek 配置；`src/kairos/chat.py` 维护消息列表并调用 OpenAI 兼容接口；`src/kairos/pricing.py` 负责用量转换和费用估算。
 - `tests/test_pricing.py` 覆盖高峰时段、缓存输入计费和未知模型价格。
 - 阶段 1 已完成最小闭环：SQLite 待办函数、工具 Schema、支持同一响应多个工具调用和跨轮继续调用的手写循环，以及 `DeepSeekModel` 和 `python scripts/debug_agent.py` 真实调试入口。可复用编排位于 `src/kairos/agent_app.py`，调试脚本单独放在 `scripts/`。当前仍不支持完整错误回传和轮数限制。
+- `scripts/experiment_tool_errors.py` 是离线错误实验入口：它用 Fake Model 模拟非法 JSON、未知工具和工具函数异常，不访问真实 API，也不修改 SQLite。
 
 ## 正常运行流程
 
@@ -18,6 +19,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 2. 复制 `.env.example` 为 `.env`，填入 `DEEPSEEK_API_KEY`；可按需调整 `DEEPSEEK_BASE_URL` 和 `KAIROS_MODEL`。
 3. 在项目根目录运行 `uv run kairos`，输入 `/help` 查看命令。
 4. 运行 `uv run pytest` 和 `uv run ruff check .` 做基础检查。
+5. 运行 `uv run python scripts/experiment_tool_errors.py` 观察当前工具错误基线；如果本机 `uv` 受缓存权限影响，可直接运行 `.venv/bin/python scripts/experiment_tool_errors.py`。
 
 真实密钥和个人数据不入库；当前只验证了不需要真实 API 请求的定价测试，命令行对话和远程模型调用尚未做本次转正验收。
 
