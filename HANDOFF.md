@@ -10,7 +10,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 - 当前代码完成阶段 0：命令行多轮对话、流式输出、思考模式切换、消息历史查看、文件输入，以及 token/费用统计。
 - `src/kairos/config.py` 从项目根目录 `.env` 和环境变量读取 DeepSeek 配置；`src/kairos/chat.py` 维护消息列表并调用 OpenAI 兼容接口；`src/kairos/pricing.py` 负责用量转换和费用估算。
 - `tests/test_pricing.py` 覆盖高峰时段、缓存输入计费和未知模型价格。
-- 阶段 1 已完成最小闭环：SQLite 待办函数、工具 Schema、支持同一响应多个工具调用、跨轮继续调用和工具错误回传的手写循环，以及 `DeepSeekModel` 和 `python scripts/debug_agent.py` 真实调试入口。可复用编排位于 `src/kairos/agent_app.py`，调试脚本单独放在 `scripts/`。当前仍不支持轮数限制。
+- 阶段 1 已完成最小闭环：SQLite 待办函数、工具 Schema、支持同一响应多个工具调用、跨轮继续调用、工具错误回传和最大工具响应轮数的手写循环，以及 `DeepSeekModel` 和 `python scripts/debug_agent.py` 真实调试入口。可复用编排位于 `src/kairos/agent_app.py`，调试脚本单独放在 `scripts/`。
 - `scripts/experiment_tool_errors.py` 是离线错误实验入口：它用 Fake Model 模拟非法 JSON、未知工具和工具函数异常，观察错误 `tool` 消息和后续模型回答，不访问真实 API，也不修改 SQLite。
 
 ## 正常运行流程
@@ -33,13 +33,13 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 
 已验证：迁移前后项目文件校验通过；Python 环境中的 3 项定价测试通过。
 
-已验证：Fake Model 覆盖消息顺序、同一响应多个工具调用、工具执行后的跨轮继续调用和非法 JSON/未知工具/工具函数异常的错误回传；Fake SDK Client 覆盖 DeepSeek 响应归一化，并覆盖真实适配器接入 SQLite 工具循环的组合路径。
+已验证：Fake Model 覆盖消息顺序、同一响应多个工具调用、工具执行后的跨轮继续调用、非法 JSON/未知工具/工具函数异常的错误回传，以及最大轮数和批次计数；Fake SDK Client 覆盖 DeepSeek 响应归一化，并覆盖真实适配器接入 SQLite 工具循环的组合路径。
 
 未验证：`debug_agent` 的真实 API 调用、流式显示、思考模式、文件输入和完整命令行交互；这些需要配置真实密钥和网络后再单独验收。
 
 ## 下一步
 
-下一步处理工具调用轮数限制；每完成一个独立阶段，更新 README、学习记录和本交接文件。
+下一步实现阶段 1 的 JSONL 观测日志；每完成一个独立阶段，更新 README、学习记录和本交接文件。
 
 ## 文档入口
 
