@@ -17,7 +17,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # 字段名不区分大小写地对应环境变量，例如 kairos_provider <- KAIROS_PROVIDER。
+    # 配置字段默认从同名环境变量读取；下面两个别名让通用 OpenAI 字段兼容旧的 DEEPSEEK_* 配置。
     kairos_provider: Literal["openai", "anthropic"] = "openai"
     openai_api_key: str | None = Field(
         default=None,
