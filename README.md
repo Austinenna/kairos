@@ -54,7 +54,7 @@ ANTHROPIC_BASE_URL=https://gateway.example
 
 当前 Anthropic 适配器使用 Python `anthropic` SDK；选择该协议前需要在运行环境安装它。SDK 的请求路径是 `/v1/messages`，因此网关根地址不要重复包含 `/v1`。阶段 0 的 `uv run kairos` 仍是独立的流式聊天入口，暂时只走 `chat.py` 的 OpenAI 兼容路径。
 
-`KAIROS_API_KEY` 是通用的网关项目 Key；协议切换只改变请求格式和 Base URL，不需要更换 Key。旧版 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY` 仍可作为兼容别名读取。
+`KAIROS_API_KEY` 是通用的网关项目 Key；协议切换只改变请求格式和 Base URL，不需要更换 Key。
 
 可以运行离线实验观察工具错误回传，不请求真实模型：
 

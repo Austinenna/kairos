@@ -19,16 +19,8 @@ class Settings(BaseSettings):
 
     # 字段名不区分大小写地对应环境变量，例如 kairos_provider <- KAIROS_PROVIDER。
     kairos_provider: Literal["openai", "anthropic"] = "openai"
-    # Key 属于网关项目，不随请求协议变化；旧变量名仅作为兼容别名。
-    kairos_api_key: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "KAIROS_API_KEY",
-            "DEEPSEEK_API_KEY",
-            "OPENAI_API_KEY",
-            "ANTHROPIC_API_KEY",
-        ),
-    )
+    # 网关项目 Key 不随请求协议变化。
+    kairos_api_key: str | None = None
     openai_base_url: str = Field(
         default="https://api.deepseek.com",
         validation_alias=AliasChoices("OPENAI_BASE_URL", "DEEPSEEK_BASE_URL"),
