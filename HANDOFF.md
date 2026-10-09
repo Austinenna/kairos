@@ -18,7 +18,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 ## 正常运行流程
 
 1. 安装 Python 3.13、`uv`。
-2. 复制 `.env.example` 为 `.env`，设置 `KAIROS_PROVIDER`；选择 `openai` 时填入 OpenAI 兼容接口的 key，选择 `anthropic` 时可复用网关的 `DEEPSEEK_API_KEY`，并在需要时设置不含 `/v1` 的 `ANTHROPIC_BASE_URL`。
+2. 复制 `.env.example` 为 `.env`，设置 `KAIROS_PROVIDER` 和通用的 `KAIROS_API_KEY`；选择 `anthropic` 时，在需要时再设置不含 `/v1` 的 `ANTHROPIC_BASE_URL`。
 3. 在项目根目录运行 `uv run kairos`，输入 `/help` 查看命令。
 4. 运行 `uv run pytest` 和 `uv run ruff check .` 做基础检查。
 5. 运行 `uv run python scripts/experiment_tool_errors.py` 观察工具错误回传；如果本机 `uv` 受缓存权限影响，可直接运行 `.venv/bin/python scripts/experiment_tool_errors.py`。

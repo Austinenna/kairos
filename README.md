@@ -39,7 +39,7 @@ Agent 调试入口通过 `.env` 的 `KAIROS_PROVIDER` 选择协议：
 ```dotenv
 KAIROS_PROVIDER=openai       # 当前示例是 DeepSeek 的 OpenAI 兼容接口
 KAIROS_MODEL=deepseek-flash
-DEEPSEEK_API_KEY=...
+KAIROS_API_KEY=...
 ```
 
 切换到 Anthropic Messages 时改成：
@@ -47,13 +47,14 @@ DEEPSEEK_API_KEY=...
 ```dotenv
 KAIROS_PROVIDER=anthropic
 KAIROS_MODEL=deepseek-flash       # 网关支持 Anthropic 协议时保留网关模型别名
-DEEPSEEK_API_KEY=...
 DEEPSEEK_BASE_URL=https://gateway.example/v1
 # 可选：Anthropic SDK 的网关根地址；不填时自动去掉上面地址末尾的 /v1
 ANTHROPIC_BASE_URL=https://gateway.example
 ```
 
 当前 Anthropic 适配器使用 Python `anthropic` SDK；选择该协议前需要在运行环境安装它。SDK 的请求路径是 `/v1/messages`，因此网关根地址不要重复包含 `/v1`。阶段 0 的 `uv run kairos` 仍是独立的流式聊天入口，暂时只走 `chat.py` 的 OpenAI 兼容路径。
+
+`KAIROS_API_KEY` 是通用的网关项目 Key；协议切换只改变请求格式和 Base URL，不需要更换 Key。旧版 `DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY` 仍可作为兼容别名读取。
 
 可以运行离线实验观察工具错误回传，不请求真实模型：
 

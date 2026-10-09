@@ -34,6 +34,16 @@ def _anthropic_base_url(settings: Settings) -> str | None:
     return shared
 
 
+def _api_key(settings: Settings) -> str | None:
+    """读取统一网关 Key，并兼容旧版按协议命名的配置对象。"""
+    return (
+        getattr(settings, "kairos_api_key", None)
+        or getattr(settings, "openai_api_key", None)
+        or getattr(settings, "anthropic_api_key", None)
+        or getattr(settings, "deepseek_api_key", None)
+    )
+
+
 def build_tool_handlers(connection: Any) -> dict[str, Any]:
     """把数据库连接绑定到四个待办函数，交给 Agent 循环按名称调用。"""
     return {
@@ -53,7 +63,7 @@ def build_model(settings: Settings, client: Any | None = None) -> Model:
             extra_body = None
         return OpenAICompatibleModel(
             model=settings.kairos_model,
-            api_key=getattr(settings, "openai_api_key", None) or getattr(settings, "deepseek_api_key", None),
+            api_key=_api_key(settings),
             base_url=getattr(settings, "openai_base_url", None) or getattr(settings, "deepseek_base_url", None),
             client=client,
             extra_body=extra_body,
@@ -61,9 +71,7 @@ def build_model(settings: Settings, client: Any | None = None) -> Model:
     if provider == "anthropic":
         return AnthropicMessagesModel(
             settings.kairos_model,
-            api_key=getattr(settings, "anthropic_api_key", None)
-            or getattr(settings, "openai_api_key", None)
-            or getattr(settings, "deepseek_api_key", None),
+            api_key=_api_key(settings),
             base_url=_anthropic_base_url(settings),
             client=client,
             max_tokens=getattr(settings, "anthropic_max_tokens", 4096),

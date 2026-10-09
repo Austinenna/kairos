@@ -104,7 +104,7 @@ def test_run_cli_connects_real_adapter_to_tool_loop(tmp_path):
     ]
     settings = SimpleNamespace(
         kairos_model="deepseek-flash",
-        deepseek_api_key="test-key",
+        kairos_api_key="test-key",
         deepseek_base_url="https://example.test",
     )
 
@@ -132,7 +132,7 @@ def test_run_cli_can_select_anthropic_messages_adapter(tmp_path):
     settings = SimpleNamespace(
         kairos_provider="anthropic",
         kairos_model="claude-test",
-        anthropic_api_key="test-key",
+        kairos_api_key="test-key",
         anthropic_base_url="https://gateway.example",
         anthropic_max_tokens=128,
     )

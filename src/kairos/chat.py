@@ -100,13 +100,11 @@ def run() -> None:
         console.print("[red]配置无效。[/]把 .env.example 复制成 .env，并检查模型配置后再运行。")
         return
 
-    if not settings.openai_api_key:
-        console.print(
-            "[red]没有找到 OPENAI_API_KEY 或 DEEPSEEK_API_KEY。[/]把 .env.example 复制成 .env，填入你的 key 再运行。"
-        )
+    if not settings.kairos_api_key:
+        console.print("[red]没有找到 KAIROS_API_KEY。[/]把 .env.example 复制成 .env，填入网关项目 Key 再运行。")
         return
 
-    client = OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
+    client = OpenAI(api_key=settings.kairos_api_key, base_url=settings.openai_base_url)
     model = settings.kairos_model
     system_prompt = DEFAULT_SYSTEM_PROMPT
     messages: list[dict] = [{"role": "system", "content": system_prompt}]
@@ -171,7 +169,7 @@ def run() -> None:
             continue
         except openai.AuthenticationError:
             messages.pop()
-            console.print("\n[red]API key 无效。[/]检查 .env 里的 DEEPSEEK_API_KEY。")
+            console.print("\n[red]API key 无效。[/]检查 .env 里的 KAIROS_API_KEY。")
             continue
         except openai.APIStatusError as e:
             messages.pop()

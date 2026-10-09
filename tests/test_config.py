@@ -13,5 +13,17 @@ def test_anthropic_settings_can_reuse_gateway_deepseek_credentials(tmp_path):
 
     settings = Settings(_env_file=env_file)
 
-    assert settings.anthropic_api_key == "gateway-token"
+    assert settings.kairos_api_key == "gateway-token"
     assert settings.openai_base_url == "https://gateway.example/v1"
+
+
+def test_generic_kairos_key_takes_precedence_over_legacy_alias(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "KAIROS_API_KEY=canonical-token\nDEEPSEEK_API_KEY=legacy-token\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings(_env_file=env_file)
+
+    assert settings.kairos_api_key == "canonical-token"
