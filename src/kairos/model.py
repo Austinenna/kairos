@@ -235,6 +235,7 @@ class AnthropicMessagesModel:
         model: str,
         *,
         api_key: str | None = None,
+        base_url: str | None = None,
         client: Any | None = None,
         max_tokens: int = 4096,
     ):
@@ -247,7 +248,7 @@ class AnthropicMessagesModel:
             from anthropic import Anthropic
         except ModuleNotFoundError as error:
             raise RuntimeError("使用 AnthropicMessagesModel 需要先安装 anthropic 包") from error
-        self.client = Anthropic(api_key=api_key)
+        self.client = Anthropic(api_key=api_key, base_url=base_url)
 
     def complete(self, *, messages: list[dict], tools: list[dict]) -> dict:
         system, claude_messages = _anthropic_messages(messages)

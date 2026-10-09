@@ -1,7 +1,28 @@
 import json
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 from kairos.model import AnthropicMessagesModel, OpenAICompatibleModel
+
+
+def test_anthropic_constructor_passes_gateway_base_url(monkeypatch):
+    captured = {}
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    fake_module = ModuleType("anthropic")
+    fake_module.Anthropic = FakeAnthropic
+    monkeypatch.setitem(sys.modules, "anthropic", fake_module)
+
+    AnthropicMessagesModel(
+        "deepseek-flash",
+        api_key="gateway-token",
+        base_url="https://gateway.example",
+    )
+
+    assert captured == {"api_key": "gateway-token", "base_url": "https://gateway.example"}
 
 
 class FakeCompletions:

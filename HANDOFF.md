@@ -18,7 +18,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 ## 正常运行流程
 
 1. 安装 Python 3.13、`uv`。
-2. 复制 `.env.example` 为 `.env`，设置 `KAIROS_PROVIDER`；选择 `openai` 时填入 OpenAI 兼容接口的 key，选择 `anthropic` 时填入 `ANTHROPIC_API_KEY` 和对应的 `KAIROS_MODEL`。
+2. 复制 `.env.example` 为 `.env`，设置 `KAIROS_PROVIDER`；选择 `openai` 时填入 OpenAI 兼容接口的 key，选择 `anthropic` 时可复用网关的 `DEEPSEEK_API_KEY`，并在需要时设置不含 `/v1` 的 `ANTHROPIC_BASE_URL`。
 3. 在项目根目录运行 `uv run kairos`，输入 `/help` 查看命令。
 4. 运行 `uv run pytest` 和 `uv run ruff check .` 做基础检查。
 5. 运行 `uv run python scripts/experiment_tool_errors.py` 观察工具错误回传；如果本机 `uv` 受缓存权限影响，可直接运行 `.venv/bin/python scripts/experiment_tool_errors.py`。
@@ -38,7 +38,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 
 已验证：Fake Model 覆盖消息顺序、同一响应多个工具调用、工具执行后的跨轮继续调用、非法 JSON/未知工具/工具函数异常的错误回传、最大轮数和批次计数，以及 JSONL 事件；Fake SDK Client 覆盖 OpenAI 兼容响应归一化、Anthropic Messages 响应归一化、usage/finish_reason 和两种适配器接入 SQLite 工具循环的组合路径。
 
-未验证：Anthropic 适配器的真实 SDK/API 调用、两家模型的真实对比、`debug_agent` 的真实 API 调用、流式显示、思考模式、文件输入和完整命令行交互；Anthropic 适配器当前用 Fake Client 验证请求转换和响应归一化，真实联调需要安装 `anthropic`、配置密钥和网络后单独验收。阶段 0 的 `chat.py` 仍未接入这套 provider 选择。
+未验证：Anthropic 适配器的真实网关 API 调用、两家模型的真实对比、`debug_agent` 的真实 API 调用、流式显示、思考模式、文件输入和完整命令行交互；当前已用 Fake Client 验证请求转换和响应归一化，并验证 SDK 构造时会接收网关根地址，真实联调仍需网络可达并单独验收。阶段 0 的 `chat.py` 仍未接入这套 provider 选择。
 
 ## 下一步
 

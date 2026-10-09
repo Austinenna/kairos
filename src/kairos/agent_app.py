@@ -19,6 +19,21 @@ SYSTEM_PROMPT = """你是 Kairos，用户的个人助手。回答简洁直接，
 没有必要操作待办时直接回答，不要为了调用工具而调用工具。"""
 
 
+def _anthropic_base_url(settings: Settings) -> str | None:
+    """返回 Anthropic SDK 使用的根地址，并兼容现有的 OpenAI 网关配置。"""
+    explicit = getattr(settings, "anthropic_base_url", None)
+    if explicit:
+        return explicit.rstrip("/")
+
+    shared = getattr(settings, "openai_base_url", None) or getattr(settings, "deepseek_base_url", None)
+    if not shared:
+        return None
+    shared = shared.rstrip("/")
+    if shared.endswith("/v1"):
+        return shared[:-3]
+    return shared
+
+
 def build_tool_handlers(connection: Any) -> dict[str, Any]:
     """把数据库连接绑定到四个待办函数，交给 Agent 循环按名称调用。"""
     return {
@@ -46,7 +61,10 @@ def build_model(settings: Settings, client: Any | None = None) -> Model:
     if provider == "anthropic":
         return AnthropicMessagesModel(
             settings.kairos_model,
-            api_key=getattr(settings, "anthropic_api_key", None),
+            api_key=getattr(settings, "anthropic_api_key", None)
+            or getattr(settings, "openai_api_key", None)
+            or getattr(settings, "deepseek_api_key", None),
+            base_url=_anthropic_base_url(settings),
             client=client,
             max_tokens=getattr(settings, "anthropic_max_tokens", 4096),
         )

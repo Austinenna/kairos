@@ -28,5 +28,12 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("OPENAI_BASE_URL", "DEEPSEEK_BASE_URL"),
     )
     kairos_model: str = "deepseek-flash"
-    anthropic_api_key: str | None = None
+    # 网关项目 Token 可同时用于 OpenAI 兼容和 Anthropic Messages 协议。
+    # 保留明确的 ANTHROPIC_API_KEY，同时兼容当前项目已有的 key 命名。
+    anthropic_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY"),
+    )
+    # Anthropic SDK 会自行补上 /v1/messages，因此这里填写网关根地址。
+    anthropic_base_url: str | None = Field(default=None, validation_alias=AliasChoices("ANTHROPIC_BASE_URL"))
     anthropic_max_tokens: int = 4096
