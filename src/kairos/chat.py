@@ -7,13 +7,15 @@ Agent 循环由 ``kairos.runtime.AgentRuntime`` 统一管理。
 from pathlib import Path
 
 import openai
-from openai import OpenAI
 from pydantic import ValidationError
 from rich.console import Console
 
 from .config import Settings
-from .pricing import CONTEXT_WINDOW, Usage, estimate_cost, is_peak, usage_from_openai
+from .pricing import CONTEXT_WINDOW, Usage, estimate_cost, is_peak
 from .runtime import AgentRuntime, create_runtime
+from .streaming import stream_reply
+
+__all__ = ["format_stats", "run", "stream_reply"]
 
 HELP = """\
 [bold]命令[/]
@@ -24,53 +26,6 @@ HELP = """\
   /reset          清空对话，保留 system 提示词
   /exit           退出（也可以按 Ctrl+D）
 生成过程中按 Ctrl+C 可以中断这一轮。"""
-
-
-def stream_reply(
-    client: OpenAI, model: str, messages: list[dict], think: bool, console: Console
-) -> tuple[str, Usage | None, str | None]:
-    """发一次请求，流式打印回复。返回（回复全文，用量，结束原因）。"""
-    stream = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        stream=True,
-        # 让服务端在最后一个数据块里附上 token 用量
-        stream_options={"include_usage": True},
-        # DeepSeek 自己的参数，OpenAI SDK 不认识，所以放在 extra_body 里原样发过去
-        extra_body={"thinking": {"type": "enabled" if think else "disabled"}},
-    )
-
-    reply_parts: list[str] = []
-    usage = None
-    finish_reason = None
-    printed_reasoning = False
-
-    for chunk in stream:
-        if chunk.usage:
-            usage = usage_from_openai(chunk.usage)
-        if not chunk.choices:
-            continue
-        choice = chunk.choices[0]
-        if choice.finish_reason:
-            finish_reason = choice.finish_reason
-        delta = choice.delta
-
-        # 思考内容是 DeepSeek 额外加的字段，SDK 的类型里没有，用 getattr 读
-        reasoning = getattr(delta, "reasoning_content", None)
-        if reasoning:
-            if not printed_reasoning:
-                console.print("[dim]（思考中）[/]")
-                printed_reasoning = True
-            console.print(reasoning, end="", style="dim", markup=False, highlight=False, soft_wrap=True)
-
-        if delta.content:
-            if printed_reasoning and not reply_parts:
-                console.print("\n")
-            reply_parts.append(delta.content)
-            console.print(delta.content, end="", markup=False, highlight=False, soft_wrap=True)
-
-    console.print()
-    return "".join(reply_parts), usage, finish_reason
 
 
 def format_stats(model: str, usage: Usage | None, cost: float | None, total_cost: float) -> str:
