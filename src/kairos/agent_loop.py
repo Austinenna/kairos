@@ -64,7 +64,7 @@ def _execute_tool(tool_call: dict, tool_handlers: Mapping[str, ToolHandler]) -> 
         return _error_content(error)
 
 
-def run_single_tool_turn(
+def run_agent_turn(
     messages: list[dict],
     model: Model,
     tool_handlers: Mapping[str, ToolHandler],
@@ -112,6 +112,7 @@ def run_single_tool_turn(
                         "duration_ms": round((perf_counter() - model_started) * 1000, 3),
                     }
                 )
+
             raise
         if logger:
             logger(
@@ -161,3 +162,7 @@ def run_single_tool_turn(
                         "duration_ms": round((perf_counter() - result_started) * 1000, 3),
                     }
                 )
+
+
+# 兼容阶段 1 期间已经存在的调用方；新的代码统一使用 ``run_agent_turn``。
+run_single_tool_turn = run_agent_turn
