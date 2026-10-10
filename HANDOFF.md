@@ -38,7 +38,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 
 已验证：Fake Model 覆盖消息顺序、同一响应多个工具调用、工具执行后的跨轮继续调用、非法 JSON/未知工具/工具函数异常的错误回传、最大轮数和批次计数，以及 JSONL 事件；Fake SDK Client 覆盖 OpenAI 兼容响应归一化、Anthropic Messages 响应归一化、usage/finish_reason 和两种适配器接入 SQLite 工具循环的组合路径。
 
-未验证：Anthropic 适配器的真实网关 API 调用、两家模型的真实对比、`debug_agent` 的真实 API 调用，以及真实网络下的完整命令行交互。当前主程序已经通过 `AgentRuntime` 接入统一 Agent loop；原有 `stream_reply` 辅助函数仍在 `chat.py` 中，但当前主流程使用 runtime 的完整回合结果，不应把它当作已验收的流式 Agent 输出。Fake Client 已验证请求转换、响应归一化、工具链路和网关根地址传递。
+未验证：Anthropic 适配器的真实网关 API 调用、两家模型的真实对比、`debug_agent` 的真实 API 调用，以及真实网络下的完整命令行交互。当前主程序已经通过 `AgentRuntime` 接入统一 Agent loop；旧版 `stream_reply` 辅助函数已移到 `streaming.py`，`chat.py` 只保留兼容导出，当前主流程使用 runtime 的完整回合结果，不应把它当作已验收的流式 Agent 输出。Fake Client 已验证请求转换、响应归一化、工具链路和网关根地址传递。
 
 ## 下一步
 

@@ -21,7 +21,7 @@ kairos 主入口
   -> todos.py + SQLite          待办工具和持久化数据
 ```
 
-`src/kairos/runtime.py` 是应用的组装和协调边界：它根据 `Settings` 创建模型适配器，初始化 SQLite 和待办工具注册表，保存当前会话的 messages，并把一次用户输入交给 Agent loop。`src/kairos/chat.py` 不再自己创建模型或维护 Agent 消息历史。
+`src/kairos/runtime.py` 是应用的组装和协调边界：它根据 `Settings` 创建模型适配器，初始化 SQLite 和待办工具注册表，保存当前会话的 messages，并把一次用户输入交给 Agent loop。`src/kairos/chat.py` 不再自己创建模型或维护 Agent 消息历史；旧版阶段 0 流式辅助函数单独位于 `src/kairos/streaming.py`。
 
 协议实现位于 `src/kairos/providers/`：`OpenAICompatibleModel`、`AnthropicMessagesModel` 和共享的响应转换逻辑分别放在独立模块中。旧的 `src/kairos/model.py` 仍保留兼容导出；`src/kairos/agent_app.py` 也保留 `run_cli`、`run_prompt` 等阶段 1 调用方的兼容包装。`scripts/debug_agent.py` 是一次性真实模型调试入口，复用 `create_runtime()`，不是另一套 Agent 实现。
 
