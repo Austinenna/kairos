@@ -6,7 +6,24 @@ Kairos 是希腊语里“恰当的时机”。这个助手和普通聊天机器�
 
 核心部分（agent 循环、模型适配层、记忆）都是手写的，不依赖 agent 框架。学习计划见 [本地 14 周计划](docs/个人%20Agent%20助手%2014%20周计划.html)，实验记录见 [docs/learning-log.md](docs/learning-log.md)。
 
-当前项目已完成阶段 0 的最小多轮对话、流式输出和 token/费用统计；阶段 1 已完成 s1-1 至 s1-9，s1-10 的双模型对比仍待完成。Agent 调试入口已经可以在 OpenAI 兼容协议和 Anthropic Messages 协议之间切换。阶段 2 尚未开始。接手时先读 [HANDOFF.md](HANDOFF.md) 和 [CLAUDE.md](CLAUDE.md)。
+当前项目已完成阶段 0 的多轮对话和 token/费用统计，以及阶段 1 的 s1-1 至 s1-9。主程序现在通过 `kairos.runtime.AgentRuntime` 使用 Agent loop；`chat.py` 只负责交互式输入、命令和展示。s1-10 的双模型对比和阶段 2 仍待完成。接手时先读 [HANDOFF.md](HANDOFF.md) 和 [CLAUDE.md](CLAUDE.md)。
+
+## 当前架构
+
+主程序只有一个对话入口，组件由统一运行时组装：
+
+```text
+kairos 主入口
+  -> chat.run()                 CLI：输入、斜杠命令、展示
+  -> AgentRuntime.respond()    会话、模型、工具、数据库和日志的协调
+  -> run_agent_turn()           模型请求、工具执行和跨轮循环
+  -> providers/                 OpenAI 兼容或 Anthropic Messages 适配器
+  -> todos.py + SQLite          待办工具和持久化数据
+```
+
+`src/kairos/runtime.py` 是应用的组装和协调边界：它根据 `Settings` 创建模型适配器，初始化 SQLite 和待办工具注册表，保存当前会话的 messages，并把一次用户输入交给 Agent loop。`src/kairos/chat.py` 不再自己创建模型或维护 Agent 消息历史。
+
+协议实现位于 `src/kairos/providers/`：`OpenAICompatibleModel`、`AnthropicMessagesModel` 和共享的响应转换逻辑分别放在独立模块中。旧的 `src/kairos/model.py` 仍保留兼容导出；`src/kairos/agent_app.py` 也保留 `run_cli`、`run_prompt` 等阶段 1 调用方的兼容包装。`scripts/debug_agent.py` 是一次性真实模型调试入口，复用 `create_runtime()`，不是另一套 Agent 实现。
 
 ## 快速开始
 
@@ -28,7 +45,7 @@ uv run kairos
 | `/reset` | 清空对话 |
 | `/exit` | 退出 |
 
-阶段 1 的单轮真实模型调试可以单独运行，不影响阶段 0 的聊天历史：
+一次性真实模型调试可以单独运行，不影响主程序的聊天历史：
 
 ```bash
 uv run python scripts/debug_agent.py "把学习 Agent 加入待办"
@@ -47,12 +64,12 @@ KAIROS_API_KEY=...
 ```dotenv
 KAIROS_PROVIDER=anthropic
 KAIROS_MODEL=deepseek-flash       # 网关支持 Anthropic 协议时保留网关模型别名
-DEEPSEEK_BASE_URL=https://gateway.example/v1
+GATEWAY_BASE_URL=https://gateway.example/v1
 # 可选：Anthropic SDK 的网关根地址；不填时自动去掉上面地址末尾的 /v1
 ANTHROPIC_BASE_URL=https://gateway.example
 ```
 
-当前 Anthropic 适配器使用 Python `anthropic` SDK；选择该协议前需要在运行环境安装它。SDK 的请求路径是 `/v1/messages`，因此网关根地址不要重复包含 `/v1`。阶段 0 的 `uv run kairos` 仍是独立的流式聊天入口，暂时只走 `chat.py` 的 OpenAI 兼容路径。
+当前 Anthropic 适配器使用 Python `anthropic` SDK；选择该协议前需要在运行环境安装它。SDK 的请求路径是 `/v1/messages`，因此 Anthropic SDK 使用的网关根地址不要重复包含 `/v1`。`Settings.gateway_base_url` 是代码中的统一字段；`KAIROS_BASE_URL`、`GATEWAY_BASE_URL`、`OPENAI_BASE_URL` 和旧的 `DEEPSEEK_BASE_URL` 都可作为环境变量别名读取。
 
 `KAIROS_API_KEY` 是通用的网关项目 Key；协议切换只改变请求格式和 Base URL，不需要更换 Key。
 
@@ -73,7 +90,11 @@ uv run python scripts/debug_agent.py --log-path /tmp/kairos-agent.jsonl "请查�
 ```
 
 待办数据保存在本地 `data/kairos.sqlite3`；该命令需要 `.env` 中所选协议对应的 API key。
-命令行脚本位于 `scripts/`，正式的 Agent 编排代码位于 `src/kairos/agent_app.py`。
+命令行脚本位于 `scripts/`，正式的 Agent 编排代码位于 `src/kairos/runtime.py` 和 `src/kairos/agent_loop.py`。
+
+## 当前验证基线
+
+在当前重构分支上，离线测试为 `44 passed`，`uv run ruff check .` 通过。这个基线覆盖运行时接入主程序、连续会话、待办工具注册、跨工具轮次、用量汇总、配置别名和两个模型适配器的 Fake Client 路径；尚未证明真实网关请求成功。
 
 ## 进度
 
@@ -90,6 +111,7 @@ uv run python scripts/debug_agent.py --log-path /tmp/kairos-agent.jsonl "请查�
 ## 开发
 
 ```bash
-uv run pytest
+uv run pytest -q
+uv run ruff check .
 uv run ruff check --fix && uv run ruff format
 ```

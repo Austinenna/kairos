@@ -8,9 +8,9 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 
 - 项目按正式应用维护，当前仓库用于持续开发。
 - 当前代码完成阶段 0：命令行多轮对话、流式输出、思考模式切换、消息历史查看、文件输入，以及 token/费用统计。
-- `src/kairos/config.py` 从项目根目录 `.env` 和环境变量读取模型协议配置；`src/kairos/chat.py` 维护消息列表并调用 OpenAI 兼容接口；`src/kairos/pricing.py` 负责用量转换和费用估算。
+- `src/kairos/config.py` 从项目根目录 `.env` 和环境变量读取模型协议配置；代码中的统一网关地址字段是 `Settings.gateway_base_url`（保留多个环境变量别名兼容旧配置）；`src/kairos/pricing.py` 负责用量转换和费用估算。
 - `tests/test_pricing.py` 覆盖高峰时段、缓存输入计费和未知模型价格。
-- 阶段 1 已完成 s1-1 至 s1-9：SQLite 待办函数、工具 Schema、支持同一响应多个工具调用、跨轮继续调用、工具错误回传、最大工具响应轮数和 JSONL 观测日志的手写循环，以及把 OpenAI 兼容格式和 Anthropic Messages 格式转换到同一内部接口的模型适配层。`agent_app.run_cli` 已通过 `KAIROS_PROVIDER` 选择适配器；可复用编排位于 `src/kairos/agent_app.py`，调试脚本单独放在 `scripts/`。
+- 阶段 1 已完成 s1-1 至 s1-9：SQLite 待办函数、工具 Schema、支持同一响应多个工具调用、跨轮继续调用、工具错误回传、最大工具响应轮数和 JSONL 观测日志的手写循环，以及把 OpenAI 兼容格式和 Anthropic Messages 格式转换到同一内部接口的模型适配层。重构后主入口 `kairos -> chat.run() -> AgentRuntime.respond() -> run_agent_turn()` 已接通 Agent loop；可复用运行时位于 `src/kairos/runtime.py`，协议实现位于 `src/kairos/providers/`。`src/kairos/agent_app.py` 保留旧的 `run_cli`、`run_prompt` 兼容包装，`scripts/debug_agent.py` 是复用同一运行时的一次性调试入口。
 - 阶段 1 的 s1-10（同一批请求在两家模型上运行并比较工具调用格式和行为）尚未完成；阶段 2 尚未开始。
 - `scripts/experiment_tool_errors.py` 是离线错误实验入口：它用 Fake Model 模拟非法 JSON、未知工具和工具函数异常，观察错误 `tool` 消息和后续模型回答，不访问真实 API，也不修改 SQLite。
 - `src/kairos/observability.py` 提供本地 JSONL 日志；通过 `--log-path` 显式启用，默认不写日志。
@@ -18,9 +18,9 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 ## 正常运行流程
 
 1. 安装 Python 3.13、`uv`。
-2. 复制 `.env.example` 为 `.env`，设置 `KAIROS_PROVIDER` 和通用的 `KAIROS_API_KEY`；选择 `anthropic` 时，在需要时再设置不含 `/v1` 的 `ANTHROPIC_BASE_URL`。
-3. 在项目根目录运行 `uv run kairos`，输入 `/help` 查看命令。
-4. 运行 `uv run pytest` 和 `uv run ruff check .` 做基础检查。
+2. 复制 `.env.example` 为 `.env`，设置 `KAIROS_PROVIDER`、通用的 `KAIROS_API_KEY` 和 `GATEWAY_BASE_URL`（旧的 `DEEPSEEK_BASE_URL` 等别名仍兼容）；选择 `anthropic` 时，在需要时再设置不含 `/v1` 的 `ANTHROPIC_BASE_URL`。
+3. 在项目根目录运行 `uv run kairos`，输入 `/help` 查看命令。主程序由 `chat.py` 提供 CLI，由 `AgentRuntime` 管理会话、模型、工具和 SQLite。
+4. 运行 `uv run pytest -q` 和 `uv run ruff check .` 做基础检查；当前基线为 `44 passed` 且 Ruff 通过。
 5. 运行 `uv run python scripts/experiment_tool_errors.py` 观察工具错误回传；如果本机 `uv` 受缓存权限影响，可直接运行 `.venv/bin/python scripts/experiment_tool_errors.py`。
 6. 真实调试时可加 `--log-path /tmp/kairos-agent.jsonl` 保存本轮观测事件。
 
@@ -34,15 +34,15 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 
 ## 已验证与未验证
 
-已验证：迁移前后项目文件校验通过；Python 环境中的 3 项定价测试通过。
+已验证：当前重构分支 `uv run pytest -q` 为 44 项通过，`uv run ruff check .` 通过。
 
 已验证：Fake Model 覆盖消息顺序、同一响应多个工具调用、工具执行后的跨轮继续调用、非法 JSON/未知工具/工具函数异常的错误回传、最大轮数和批次计数，以及 JSONL 事件；Fake SDK Client 覆盖 OpenAI 兼容响应归一化、Anthropic Messages 响应归一化、usage/finish_reason 和两种适配器接入 SQLite 工具循环的组合路径。
 
-未验证：Anthropic 适配器的真实网关 API 调用、两家模型的真实对比、`debug_agent` 的真实 API 调用、流式显示、思考模式、文件输入和完整命令行交互；当前已用 Fake Client 验证请求转换和响应归一化，并验证 SDK 构造时会接收网关根地址，真实联调仍需网络可达并单独验收。阶段 0 的 `chat.py` 仍未接入这套 provider 选择。
+未验证：Anthropic 适配器的真实网关 API 调用、两家模型的真实对比、`debug_agent` 的真实 API 调用，以及真实网络下的完整命令行交互。当前主程序已经通过 `AgentRuntime` 接入统一 Agent loop；原有 `stream_reply` 辅助函数仍在 `chat.py` 中，但当前主流程使用 runtime 的完整回合结果，不应把它当作已验收的流式 Agent 输出。Fake Client 已验证请求转换、响应归一化、工具链路和网关根地址传递。
 
 ## 下一步
 
-下一步完成阶段 1 的 s1-10 双模型对比；阶段 2 的工具设计与安全策略在此之后开始。每完成一个独立阶段，更新 README、学习记录和本交接文件。
+下一步完成阶段 1 的 s1-10 双模型对比，并单独验收真实网关调用；阶段 2 的工具设计与安全策略在此之后开始。每完成一个独立阶段，更新 README、学习记录和本交接文件。
 
 ## 文档入口
 
