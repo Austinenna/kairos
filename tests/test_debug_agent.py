@@ -105,7 +105,7 @@ def test_run_cli_connects_real_adapter_to_tool_loop(tmp_path):
     settings = SimpleNamespace(
         kairos_model="deepseek-flash",
         kairos_api_key="test-key",
-        deepseek_base_url="https://example.test",
+        gateway_base_url="https://example.test",
     )
 
     answer = run_cli(

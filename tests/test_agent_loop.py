@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from kairos.agent_loop import AgentLoopLimitError, run_single_tool_turn
+from kairos.agent_loop import AgentLoopLimitError, run_agent_turn
 
 
 class FakeModel:
@@ -41,7 +41,7 @@ def test_single_tool_turn_executes_tool_and_returns_final_answer():
         return {"id": 1, "title": arguments["title"]}
 
     messages = [{"role": "user", "content": "把学习 Agent 加入待办"}]
-    final_content, updated_messages = run_single_tool_turn(
+    final_content, updated_messages = run_agent_turn(
         messages,
         model,
         {"add_todo": add_todo},
@@ -65,7 +65,7 @@ def test_single_tool_turn_can_return_direct_model_answer():
     model = FakeModel([{"content": "今天没有需要处理的待办。", "tool_calls": []}])
     messages = [{"role": "user", "content": "今天有什么事？"}]
 
-    final_content, updated_messages = run_single_tool_turn(messages, model, {}, [])
+    final_content, updated_messages = run_agent_turn(messages, model, {}, [])
 
     assert final_content == "今天没有需要处理的待办。"
     assert updated_messages[-1] == {"role": "assistant", "content": "今天没有需要处理的待办。"}
@@ -90,7 +90,7 @@ def test_single_tool_turn_preserves_reasoning_content_in_assistant_message():
         ]
     )
 
-    _, updated_messages = run_single_tool_turn(
+    _, updated_messages = run_agent_turn(
         [{"role": "user", "content": "加一个待办"}],
         model,
         {"add_todo": lambda: {"id": 1}},
@@ -122,7 +122,7 @@ def test_single_tool_turn_executes_multiple_tool_calls_in_order():
 
         return run
 
-    final_content, messages = run_single_tool_turn(
+    final_content, messages = run_agent_turn(
         [{"role": "user", "content": "执行两个操作"}],
         model,
         {"first": handler("first"), "second": handler("second")},
@@ -154,7 +154,7 @@ def test_single_tool_turn_continues_after_tool_result_until_final_answer():
     )
     called = []
 
-    final_content, messages = run_single_tool_turn(
+    final_content, messages = run_agent_turn(
         [{"role": "user", "content": "分两步执行"}],
         model,
         {
@@ -189,7 +189,7 @@ def test_single_tool_turn_returns_invalid_json_as_tool_error():
         ]
     )
 
-    answer, messages = run_single_tool_turn(
+    answer, messages = run_agent_turn(
         [{"role": "user", "content": "测试非法参数"}],
         model,
         {"demo": lambda: {"ok": True}},
@@ -220,7 +220,7 @@ def test_single_tool_turn_returns_unknown_tool_as_tool_error():
         ]
     )
 
-    answer, messages = run_single_tool_turn(
+    answer, messages = run_agent_turn(
         [{"role": "user", "content": "测试未知工具"}],
         model,
         {},
@@ -249,7 +249,7 @@ def test_single_tool_turn_returns_handler_error_as_tool_error():
         ]
     )
 
-    answer, messages = run_single_tool_turn(
+    answer, messages = run_agent_turn(
         [{"role": "user", "content": "测试工具异常"}],
         model,
         {"demo": broken_handler},
@@ -275,7 +275,7 @@ def test_single_tool_turn_continues_other_calls_after_one_tool_error():
         ]
     )
 
-    answer, messages = run_single_tool_turn(
+    answer, messages = run_agent_turn(
         [{"role": "user", "content": "测试同批错误"}],
         model,
         {"good": lambda: called.append("good") or {"ok": True}},
@@ -299,7 +299,7 @@ def test_single_tool_turn_stops_after_max_tool_rounds():
     called = []
 
     with pytest.raises(AgentLoopLimitError, match="最大轮数（2）"):
-        run_single_tool_turn(
+        run_agent_turn(
             [{"role": "user", "content": "持续调用"}],
             model,
             {"demo": lambda: called.append("demo") or {"ok": True}},
@@ -325,7 +325,7 @@ def test_single_tool_turn_counts_a_batch_as_one_tool_round():
         ]
     )
 
-    answer, _ = run_single_tool_turn(
+    answer, _ = run_agent_turn(
         [{"role": "user", "content": "执行一批工具"}],
         model,
         {"first": lambda: {"ok": 1}, "second": lambda: {"ok": 2}},
@@ -338,7 +338,7 @@ def test_single_tool_turn_counts_a_batch_as_one_tool_round():
 
 def test_single_tool_turn_requires_positive_max_tool_rounds():
     with pytest.raises(ValueError, match="大于或等于 1"):
-        run_single_tool_turn([], FakeModel([]), {}, [], max_tool_rounds=0)
+        run_agent_turn([], FakeModel([]), {}, [], max_tool_rounds=0)
 
 
 def test_single_tool_turn_emits_jsonl_events_when_logger_is_provided():
@@ -356,7 +356,7 @@ def test_single_tool_turn_emits_jsonl_events_when_logger_is_provided():
     )
     events = []
 
-    run_single_tool_turn(
+    run_agent_turn(
         [{"role": "user", "content": "记录日志"}],
         model,
         {"demo": lambda: {"ok": True}},

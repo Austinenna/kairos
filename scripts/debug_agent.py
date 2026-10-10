@@ -4,13 +4,13 @@
 
     uv run python scripts/debug_agent.py "把学习 Agent 加入待办"
 
-正式的 Agent 编排位于 ``kairos.agent_app``；本文件只负责命令行输入输出，和正式源码分开。
+正式的 Agent 编排位于 ``kairos.runtime``；本文件只负责命令行输入输出，和正式源码分开。
 """
 
 import argparse
 from pathlib import Path
 
-from kairos.agent_app import run_cli
+from kairos.runtime import create_runtime
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -24,7 +24,11 @@ def main(argv: list[str] | None = None) -> None:
     if not prompt:
         parser.error("请输入要发送的问题")
 
-    print(run_cli(prompt, log_path=args.log_path))
+    runtime = create_runtime(log_path=args.log_path)
+    try:
+        print(runtime.respond(prompt).content)
+    finally:
+        runtime.close()
 
 
 if __name__ == "__main__":

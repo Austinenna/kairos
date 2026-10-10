@@ -13,7 +13,7 @@ from rich.console import Console
 
 from .config import Settings
 from .pricing import CONTEXT_WINDOW, Usage, estimate_cost, is_peak, usage_from_openai
-from .runtime import create_runtime
+from .runtime import AgentRuntime, create_runtime
 
 HELP = """\
 [bold]命令[/]
@@ -88,19 +88,29 @@ def format_stats(model: str, usage: Usage | None, cost: float | None, total_cost
     return "[dim]" + " · ".join(parts) + "[/]"
 
 
-def run() -> None:
-    console = Console()
-    try:
-        settings = Settings()
-    except ValidationError:
-        console.print("[red]配置无效。[/]把 .env.example 复制成 .env，并检查模型配置后再运行。")
-        return
+def run(
+    *,
+    console: Console | None = None,
+    settings: Settings | None = None,
+    runtime: AgentRuntime | None = None,
+) -> None:
+    """启动交互式 CLI；可注入运行时以便离线测试和复用。"""
 
-    if not settings.kairos_api_key:
-        console.print("[red]没有找到 KAIROS_API_KEY。[/]把 .env.example 复制成 .env，填入网关项目 Key 再运行。")
-        return
+    console = console or Console()
+    owns_runtime = runtime is None
+    if runtime is None:
+        try:
+            settings = settings or Settings()
+        except ValidationError:
+            console.print("[red]配置无效。[/]把 .env.example 复制成 .env，并检查模型配置后再运行。")
+            return
 
-    runtime = create_runtime(settings=settings)
+        if not settings.kairos_api_key:
+            console.print("[red]没有找到 KAIROS_API_KEY。[/]把 .env.example 复制成 .env，填入网关项目 Key 再运行。")
+            return
+        runtime = create_runtime(settings=settings)
+
+    assert runtime is not None
     model = runtime.model_name
     think = False
     total_cost = 0.0
@@ -180,4 +190,5 @@ def run() -> None:
             total_cost += cost or 0.0
             console.print(format_stats(model, result.usage, cost, total_cost))
     finally:
-        runtime.close()
+        if owns_runtime:
+            runtime.close()

@@ -16,7 +16,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from kairos.agent_loop import run_single_tool_turn
+from kairos.agent_loop import run_agent_turn
 
 
 class FakeModel:
@@ -79,7 +79,7 @@ def run_case(case_name: str) -> None:
     messages = [{"role": "user", "content": title}]
 
     print(f"=== {case_name}：{title} ===")
-    answer, messages = run_single_tool_turn(messages, model, handlers, [])
+    answer, messages = run_agent_turn(messages, model, handlers, [])
     print(f"最终回答：{answer}")
     print(f"model.complete 调用次数：{len(model.calls)}")
     print("停止时的 messages：")

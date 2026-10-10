@@ -14,4 +14,4 @@ def test_settings_loads_generic_gateway_credentials(tmp_path):
     settings = Settings(_env_file=env_file)
 
     assert settings.kairos_api_key == "gateway-token"
-    assert settings.openai_base_url == "https://gateway.example/v1"
+    assert settings.gateway_base_url == "https://gateway.example/v1"

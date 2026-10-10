@@ -13,9 +13,9 @@ from typing import Any
 
 from .agent_loop import EventLogger, Model, ToolHandler, run_agent_turn
 from .config import PROJECT_ROOT, Settings
-from .model import AnthropicMessagesModel, OpenAICompatibleModel
 from .observability import JsonlLogger
 from .pricing import Usage
+from .providers import AnthropicMessagesModel, OpenAICompatibleModel
 from .todos import add_todo, complete_todo, initialize_database, list_todos, update_todo
 from .tool_schemas import TODO_TOOL_SCHEMAS
 
