@@ -39,6 +39,7 @@ def test_create_runtime_injects_fake_model_and_preserves_multi_turn_history(tmp_
         assert second.content == "第二轮回答"
         assert runtime.model is model
         assert runtime.model_name == "fake-model"
+        assert "调用对应工具" in runtime.history()[0]["content"]
         assert [message["role"] for message in runtime.history()] == [
             "system",
             "user",

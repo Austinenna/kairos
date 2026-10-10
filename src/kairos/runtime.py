@@ -19,7 +19,9 @@ from .providers import AnthropicMessagesModel, OpenAICompatibleModel
 from .todos import add_todo, complete_todo, initialize_database, list_todos, update_todo
 from .tool_schemas import TODO_TOOL_SCHEMAS
 
-DEFAULT_SYSTEM_PROMPT = "你是 Kairos，用户的个人助手。回答简洁直接，使用中文。"
+DEFAULT_SYSTEM_PROMPT = """你是 Kairos，用户的个人助手。回答简洁直接，使用中文。
+当用户要求新增、查询、修改或完成待办时，调用对应工具；工具返回结果后再用中文说明结果。
+没有必要操作待办时直接回答，不要为了调用工具而调用工具。"""
 
 
 @dataclass(frozen=True)
