@@ -53,6 +53,8 @@ KAIROS_MODEL=deepseek-flash
 KAIROS_API_KEY=...
 ```
 
+`KAIROS_MODEL` 和 `GATEWAY_BASE_URL` 是必填配置，没有代码默认值；启动时缺少任一项会直接提示配置无效。
+
 切换到 Anthropic Messages 时改成：
 
 ```dotenv

@@ -247,7 +247,8 @@ def create_runtime(
 ) -> AgentRuntime:
     """创建一个完整的 AgentRuntime，并负责初始化其依赖。"""
 
-    settings = settings or Settings()
+    if model is None:
+        settings = settings or Settings()
     database_path = db_path or PROJECT_ROOT / "data" / "kairos.sqlite3"
     connection = initialize_database(database_path)
     try:

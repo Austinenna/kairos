@@ -16,7 +16,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 ## 正常运行流程
 
 1. 安装 Python 3.13、`uv`。
-2. 复制 `.env.example` 为 `.env`，设置 `KAIROS_PROVIDER`、通用的 `KAIROS_API_KEY` 和 `GATEWAY_BASE_URL`；选择 `anthropic` 时，在需要时再设置不含 `/v1` 的 `ANTHROPIC_BASE_URL`。
+2. 复制 `.env.example` 为 `.env`，设置 `KAIROS_PROVIDER`、`KAIROS_MODEL`、通用的 `KAIROS_API_KEY` 和 `GATEWAY_BASE_URL`；`KAIROS_MODEL` 与 `GATEWAY_BASE_URL` 没有代码默认值，选择 `anthropic` 时，在需要时再设置不含 `/v1` 的 `ANTHROPIC_BASE_URL`。
 3. 在项目根目录运行 `uv run kairos`，输入 `/help` 查看命令。主程序由 `chat.py` 提供 CLI，由 `AgentRuntime` 管理会话、模型、工具和 SQLite。
 4. 运行 `uv run pytest -q` 和 `uv run ruff check .` 做基础检查；当前主链路基线为 `18 passed` 且 Ruff 通过。
 5. 使用 VS Code 的 `Kairos CLI` 配置进入主程序，在 `chat.py`、`runtime.py`、`agent_loop.py` 和 `todos.py` 的边界设置断点。

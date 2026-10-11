@@ -3,6 +3,7 @@
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # src/kairos/config.py -> 项目根目录。这样无论在哪个目录运行，都能找到 .env
@@ -20,8 +21,8 @@ class Settings(BaseSettings):
     kairos_provider: Literal["openai", "anthropic"] = "openai"
     # 网关项目 Key 不随请求协议变化。
     kairos_api_key: str | None = None
-    gateway_base_url: str = "https://api.deepseek.com"
-    kairos_model: str = "deepseek-flash"
+    gateway_base_url: str = Field(min_length=1)
+    kairos_model: str = Field(min_length=1)
     # Anthropic SDK 会自行补上 /v1/messages，因此这里填写网关根地址。
     anthropic_base_url: str | None = None
     anthropic_max_tokens: int = 4096
