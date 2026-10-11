@@ -63,7 +63,7 @@ GATEWAY_BASE_URL=https://gateway.example/v1
 ANTHROPIC_BASE_URL=https://gateway.example
 ```
 
-当前 Anthropic 适配器使用 Python `anthropic` SDK；选择该协议前需要在运行环境安装它。SDK 的请求路径是 `/v1/messages`，因此 Anthropic SDK 使用的网关根地址不要重复包含 `/v1`。`Settings.gateway_base_url` 是代码中的统一字段；`KAIROS_BASE_URL`、`GATEWAY_BASE_URL`、`OPENAI_BASE_URL` 和旧的 `DEEPSEEK_BASE_URL` 都可作为环境变量别名读取。
+当前 Anthropic 适配器使用 Python `anthropic` SDK；选择该协议前需要在运行环境安装它。SDK 的请求路径是 `/v1/messages`，因此 Anthropic SDK 使用的网关根地址不要重复包含 `/v1`。代码中的统一字段是 `Settings.gateway_base_url`，环境变量使用 `GATEWAY_BASE_URL`。
 
 `KAIROS_API_KEY` 是通用的网关项目 Key；协议切换只改变请求格式和 Base URL，不需要更换 Key。
 

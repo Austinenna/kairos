@@ -60,12 +60,6 @@ def build_tool_registry(connection: Any) -> ToolRegistry:
     return ToolRegistry(handlers=build_tool_handlers(connection), schemas=list(TODO_TOOL_SCHEMAS))
 
 
-def _gateway_base_url(settings: Settings) -> str | None:
-    """读取统一网关地址，并兼容重构前的 Settings 对象字段。"""
-
-    return getattr(settings, "gateway_base_url", None) or getattr(settings, "openai_base_url", None)
-
-
 def _anthropic_base_url(settings: Settings) -> str | None:
     """返回 Anthropic SDK 使用的根地址。"""
 
@@ -73,7 +67,7 @@ def _anthropic_base_url(settings: Settings) -> str | None:
     if explicit:
         return explicit.rstrip("/")
 
-    shared = _gateway_base_url(settings)
+    shared = settings.gateway_base_url
     if not shared:
         return None
     shared = shared.rstrip("/")
@@ -90,15 +84,15 @@ def build_model(
 ) -> Model:
     """根据配置创建模型适配器，供 Agent Loop 使用。"""
 
-    provider = getattr(settings, "kairos_provider", "openai")
+    provider = settings.kairos_provider
     if provider == "openai":
         extra_body = None
-        if getattr(settings, "kairos_model", "").startswith("deepseek"):
+        if settings.kairos_model.startswith("deepseek"):
             extra_body = {"thinking": {"type": "enabled" if thinking_enabled else "disabled"}}
         return OpenAICompatibleModel(
             model=settings.kairos_model,
             api_key=settings.kairos_api_key,
-            base_url=_gateway_base_url(settings),
+            base_url=settings.gateway_base_url,
             client=client,
             extra_body=extra_body,
         )
@@ -108,7 +102,7 @@ def build_model(
             api_key=settings.kairos_api_key,
             base_url=_anthropic_base_url(settings),
             client=client,
-            max_tokens=getattr(settings, "anthropic_max_tokens", 4096),
+            max_tokens=settings.anthropic_max_tokens,
         )
     raise ValueError(f"不支持的模型协议：{provider}")
 
