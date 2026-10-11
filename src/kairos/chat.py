@@ -13,9 +13,8 @@ from rich.console import Console
 from .config import Settings
 from .pricing import CONTEXT_WINDOW, Usage, estimate_cost, is_peak
 from .runtime import AgentRuntime, create_runtime
-from .streaming import stream_reply
 
-__all__ = ["format_stats", "run", "stream_reply"]
+__all__ = ["format_stats", "run"]
 
 HELP = """\
 [bold]命令[/]

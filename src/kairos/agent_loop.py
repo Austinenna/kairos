@@ -162,7 +162,3 @@ def run_agent_turn(
                         "duration_ms": round((perf_counter() - result_started) * 1000, 3),
                     }
                 )
-
-
-# 兼容阶段 1 期间已经存在的调用方；新的代码统一使用 ``run_agent_turn``。
-run_single_tool_turn = run_agent_turn
