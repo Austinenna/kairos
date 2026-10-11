@@ -3,7 +3,7 @@ from io import StringIO
 from rich.console import Console
 
 from kairos.pricing import Usage
-from kairos.runtime import AgentTurnResult, ToolResult
+from kairos.runtime import AgentTurnResult
 from kairos.terminal_renderer import TerminalRenderer
 
 
@@ -13,28 +13,27 @@ def make_renderer():
     return TerminalRenderer(console), output
 
 
-def test_renderer_formats_todo_results_as_table_and_renders_markdown():
+def test_renderer_formats_markdown_table_once():
     renderer, output = make_renderer()
     result = AgentTurnResult(
-        content="# 查询结果\n\n共有 **1 条**待办。",
+        content="""# 查询结果
+
+共有 **1 条**待办。
+
+| ID | 待办 | 优先级 | 状态 |
+|---|---|---|---|
+| 1 | 学习 Agent | 普通 | 未完成 |
+""",
         messages=[],
         usage=None,
         finish_reason=None,
         events=[],
-        tool_results=[
-            ToolResult(
-                call_id="call_1",
-                name="list_todos",
-                value=[{"id": 1, "title": "学习 Agent", "priority": 2, "status": "pending"}],
-                content='[{"id": 1}]',
-            )
-        ],
+        tool_results=[],
     )
 
     renderer.render_turn(result, model="unknown-model", total_cost=0.0)
 
     text = output.getvalue()
-    assert "待办列表" in text
     assert "学习 Agent" in text
     assert "查询结果" in text
     assert "1 条" in text

@@ -7,20 +7,16 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
-from rich.table import Table
 
 from .pricing import CONTEXT_WINDOW, Usage, estimate_cost, is_peak
-from .runtime import AgentTurnResult, ToolResult
+from .runtime import AgentTurnResult
 
 _MERMAID_BLOCK = re.compile(r"```mermaid\s*\n(.*?)```", re.IGNORECASE | re.DOTALL)
-_PRIORITY_LABELS = {1: "低", 2: "普通", 3: "高"}
-_STATUS_LABELS = {"pending": "未完成", "completed": "已完成"}
 
 
 class TerminalRenderer:
@@ -41,7 +37,6 @@ class TerminalRenderer:
     def render_turn(self, result: AgentTurnResult, *, model: str, total_cost: float) -> float:
         """渲染一次 Agent 回合，返回本轮费用供 CLI 累加。"""
 
-        self.render_tool_results(result.tool_results)
         self.render_content(result.content)
         if result.finish_reason == "length":
             self.status("[yellow]回复被截断了：输出达到了长度上限。[/]")
@@ -68,32 +63,6 @@ class TerminalRenderer:
             )
             cursor = match.end()
         self._render_markdown(content[cursor:])
-
-    def render_tool_results(self, tool_results: list[ToolResult]) -> None:
-        """把待办查询结果渲染为表格；其他工具结果交给模型文本展示。"""
-
-        for result in tool_results:
-            if result.name == "list_todos" and isinstance(result.value, list):
-                self.render_todo_table(result.value)
-
-    def render_todo_table(self, todos: list[dict[str, Any]]) -> None:
-        table = Table(title="待办列表", show_header=True, header_style="bold cyan")
-        table.add_column("ID", style="cyan", justify="right")
-        table.add_column("待办", min_width=20)
-        table.add_column("优先级", justify="center")
-        table.add_column("状态", justify="center")
-
-        for todo in todos:
-            status = str(todo.get("status", ""))
-            status_style = "green" if status == "completed" else "white"
-            table.add_row(
-                str(todo.get("id", "")),
-                str(todo.get("title", "")),
-                _PRIORITY_LABELS.get(todo.get("priority"), str(todo.get("priority", ""))),
-                f"[{status_style}]{_STATUS_LABELS.get(status, status)}[/{status_style}]",
-            )
-
-        self.console.print(table)
 
     def render_usage(self, model: str, usage: Usage | None, cost: float | None, total_cost: float) -> None:
         if usage is None:
