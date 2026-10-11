@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -33,6 +34,16 @@ class ToolRegistry:
 
 
 @dataclass(frozen=True)
+class ToolResult:
+    """一次工具调用的结构化结果，供上层展示或记录。"""
+
+    call_id: str
+    name: str
+    value: object
+    content: str
+
+
+@dataclass(frozen=True)
 class AgentTurnResult:
     """一次用户输入完成后的结果。"""
 
@@ -41,6 +52,7 @@ class AgentTurnResult:
     usage: Usage | None
     finish_reason: str | None
     events: list[dict[str, Any]]
+    tool_results: list[ToolResult]
 
 
 def build_tool_handlers(connection: Any) -> dict[str, ToolHandler]:
@@ -130,6 +142,27 @@ def _finish_reason(events: list[dict[str, Any]]) -> str | None:
     return (response_events[-1].get("response") or {}).get("finish_reason")
 
 
+def _tool_results(events: list[dict[str, Any]]) -> list[ToolResult]:
+    results: list[ToolResult] = []
+    for event in events:
+        if event.get("event") != "tool_result":
+            continue
+        content = str(event.get("result", ""))
+        try:
+            value: object = json.loads(content)
+        except json.JSONDecodeError:
+            value = content
+        results.append(
+            ToolResult(
+                call_id=str(event.get("tool_call_id", "")),
+                name=str(event.get("tool_name", "")),
+                value=value,
+                content=content,
+            )
+        )
+    return results
+
+
 class AgentRuntime:
     """一个交互式 Agent 会话的中央协调器。"""
 
@@ -195,6 +228,7 @@ class AgentRuntime:
             usage=_aggregate_usage(events),
             finish_reason=_finish_reason(events),
             events=events,
+            tool_results=_tool_results(events),
         )
         self.last_result = result
         return result

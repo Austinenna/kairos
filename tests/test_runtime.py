@@ -82,6 +82,8 @@ def test_runtime_uses_registered_todo_tool_and_keeps_tool_messages(tmp_path):
         result = runtime.respond("创建一个测试待办")
 
         assert result.content == "待办已创建。"
+        assert result.tool_results[0].name == "add_todo"
+        assert result.tool_results[0].value["title"] == "测试运行时工具"
         assert {"add_todo", "list_todos", "update_todo", "complete_todo"} == set(runtime.tool_registry.handlers)
         assert [todo["title"] for todo in list_todos(runtime.connection)] == ["测试运行时工具"]
         assert [message["role"] for message in result.messages] == [

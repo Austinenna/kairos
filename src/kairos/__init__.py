@@ -1,4 +1,4 @@
 def main() -> None:
-    from .chat import run
+    from .cli import run
 
     run()

@@ -1,4 +1,4 @@
-from kairos.chat import run
+from kairos.cli import run
 from kairos.runtime import AgentTurnResult
 
 
@@ -35,6 +35,7 @@ class FakeRuntime:
             usage=None,
             finish_reason=None,
             events=[],
+            tool_results=[],
         )
 
     def history(self):
