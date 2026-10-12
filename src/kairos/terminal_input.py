@@ -161,7 +161,7 @@ class TerminalInput:
                 event.current_buffer.delete(count=event.arg)
 
         self._session = PromptSession(
-            message="你 › ",
+            message=[("fg:ansicyan bold", "你 › ")],
             key_bindings=bindings,
             input=input,
             output=output,
