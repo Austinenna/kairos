@@ -17,6 +17,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.document import Document
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.layout import ConditionalContainer, HSplit, Window
 from prompt_toolkit.utils import is_dumb_terminal
 
 from .clipboard import ClipboardContent, read_clipboard
@@ -171,6 +172,15 @@ class TerminalInput:
             bottom_toolbar=self._toolbar,
             reserve_space_for_menu=0,
         )
+        # 空行放在反白底栏之外，并随底栏一起隐藏，保留原有颜色和提示内容。
+        for container in self._session.layout.container.children:
+            if (
+                isinstance(container, ConditionalContainer)
+                and isinstance(container.content, Window)
+                and container.content.style == "class:bottom-toolbar"
+            ):
+                container.content = HSplit([Window(height=1), container.content])
+                break
         self._session.default_buffer.on_text_changed += self._on_change
 
     @property
