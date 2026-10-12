@@ -105,9 +105,10 @@ def run(
             # ---- 一轮 Agent 对话 ----
             renderer.status("[bold green]Kairos › [/]")
             try:
-                result = runtime.respond(user_input)
+                with renderer.stream_output():
+                    result = runtime.respond(user_input, on_event=renderer.handle_event)
             except KeyboardInterrupt:
-                renderer.status("\n[yellow]已中断，这一轮不计入对话历史。[/]")
+                renderer.status("\n[yellow]已中断。未完成的模型回答不计入历史，已执行的工具不会撤销。[/]")
                 continue
             except openai.AuthenticationError:
                 renderer.error("\n[red]API key 无效。[/]检查 .env 里的 KAIROS_API_KEY。")
@@ -122,7 +123,7 @@ def run(
                 renderer.error(f"\n[red]本轮执行失败：{type(e).__name__}: {e}[/]")
                 continue
 
-            total_cost += renderer.render_turn(result, model=model, total_cost=total_cost)
+            total_cost += renderer.render_turn(result, model=model, total_cost=total_cost, content_streamed=True)
     finally:
         if owns_runtime:
             runtime.close()

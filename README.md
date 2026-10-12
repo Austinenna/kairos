@@ -16,7 +16,7 @@ Kairos 是希腊语里“恰当的时机”。这个助手和普通聊天机器�
 
 ```text
 kairos 主入口
-  -> chat.run()                 CLI：输入、斜杠命令、展示
+  -> cli.run()                  CLI：输入、斜杠命令、展示
   -> AgentRuntime.respond()    会话、模型、工具、数据库和日志的协调
   -> run_agent_turn()           模型请求、工具执行和跨轮循环
   -> providers/                 OpenAI 兼容或 Anthropic Messages 适配器
@@ -26,6 +26,20 @@ kairos 主入口
 `src/kairos/runtime.py` 是应用的组装和协调边界：它根据 `Settings` 创建模型适配器，初始化 SQLite 和待办工具注册表，保存当前会话的 messages，并把一次用户输入交给 Agent loop。`src/kairos/cli.py` 只负责终端输入和命令，`src/kairos/terminal_renderer.py` 负责把结构化结果渲染为终端内容。
 
 协议实现位于 `src/kairos/providers/`：`OpenAICompatibleModel`、`AnthropicMessagesModel` 和共享的响应转换逻辑分别放在独立模块中。主程序只通过 `runtime.create_runtime()` 创建运行时，不再保留一次性 Agent 包装入口。
+
+## 流式对话与工具调用
+
+主 CLI 默认使用流式输出，OpenAI 兼容协议和 Anthropic Messages 均支持：
+
+1. 正文片段收到就展示，同时累积完整模型响应；工具参数单独收集，不作为正文打印。
+2. 本次模型响应正常结束且全部工具参数完整后，按返回顺序串行执行整批工具。
+3. 把整批工具结果写入历史并交回模型，继续流式接收后续回答；没有工具调用时结束 Agent 回合。
+
+终端使用 Rich 活动区域渲染 Markdown 和 Mermaid 代码面板；长回答生成时显示末尾，响应结束后保留全文。重定向到文件或管道时逐段输出原始正文，不写入终端重绘控制码。整轮结束只补充用量统计，不重复打印答案。思考内容保留在模型历史中，不混入正文；Anthropic 内容块顺序和思考签名保留用于后续请求。
+
+代码调用 `runtime.respond(prompt, on_event=handler)` 可接收 `text_delta`（`text`、`request_number`）及模型请求、响应、错误和工具结果事件。未传 `on_event` 时沿用完整响应接口；注入的模型只有 `complete()` 时会逐次展示完整模型响应。流式读取失败不会自动重跑整个回合。
+
+Ctrl+C 或断流时，未完成模型响应不写入历史；已执行工具及其结果保留，工具副作用不会自动撤销。工具批次中断时给剩余调用补齐未执行或结果未确认标记。JSONL 日志和最终结果仍记录完整模型响应与工具结果，不逐片段重复保存正文。
 
 ## 快速开始
 
@@ -75,7 +89,7 @@ ANTHROPIC_BASE_URL=https://gateway.example
 
 ## 当前验证基线
 
-当前测试只保留主链路：主 CLI、统一运行时和 Agent loop。它们覆盖运行时接入主程序、连续会话、待办工具注册、跨工具轮次和用量汇总；尚未证明真实网关请求成功。
+离线测试覆盖主 CLI、统一运行时、Agent loop、两种协议的流式适配和终端渲染。使用真实 SDK 加模拟 SSE 验证正文提前显示、整批工具等待与串行执行、工具历史回传、用量汇总、截断拒绝和中断恢复；没有请求真实网关。
 
 ## 进度
 

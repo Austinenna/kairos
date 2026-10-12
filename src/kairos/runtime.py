@@ -192,8 +192,11 @@ class AgentRuntime:
     def model_name(self) -> str:
         return str(getattr(self.model, "model", "unknown"))
 
-    def respond(self, prompt: str) -> AgentTurnResult:
-        """处理一条用户消息，并保留本次回合产生的完整消息历史。"""
+    def respond(self, prompt: str, *, on_event: EventLogger | None = None) -> AgentTurnResult:
+        """处理用户消息；可用 on_event 实时观察正文，最终仍返回完整回合结果。
+
+        未完成的模型响应不进入历史；已经执行的工具调用和结果在中断后保留。
+        """
 
         if self._closed:
             raise RuntimeError("AgentRuntime 已经关闭")
@@ -201,6 +204,7 @@ class AgentRuntime:
             raise ValueError("用户消息不能为空")
 
         original_length = len(self.messages)
+        self.last_result = None
         self.messages.append({"role": "user", "content": prompt})
         events: list[dict[str, Any]] = []
 
@@ -217,9 +221,13 @@ class AgentRuntime:
                 self.tool_registry.schemas,
                 max_tool_rounds=self.max_tool_rounds,
                 logger=record,
+                on_event=on_event,
             )
-        except Exception:
-            del self.messages[original_length:]
+        except (Exception, KeyboardInterrupt):
+            # 尚未保存完整模型消息时撤回本轮输入。若已有工具执行，则保留其
+            # 完整历史，不能让下次请求因遗忘这些副作用而重复执行。
+            if len(self.messages) == original_length + 1:
+                del self.messages[original_length:]
             raise
 
         result = AgentTurnResult(
