@@ -11,19 +11,103 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from pygments.style import Style as PygmentsStyle
+from pygments.token import Comment, Error, Generic, Keyword, Name, Number, Operator, String, Token
 from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.live import Live
-from rich.markdown import Markdown
+from rich.markdown import CodeBlock, Heading, Markdown
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.segment import Segment
-from rich.syntax import Syntax
+from rich.style import Style
+from rich.syntax import PygmentsSyntaxTheme, Syntax
 from rich.text import Text
+from rich.theme import Theme
 
 from .images import redact_images
 from .pricing import CONTEXT_WINDOW, Usage, estimate_cost, is_peak
 from .runtime import AgentTurnResult
 
 _MERMAID_BLOCK = re.compile(r"```mermaid\s*\n(.*?)```", re.IGNORECASE | re.DOTALL)
+
+_INK = "#252e34"
+_MUTED = "#758089"
+_CYAN = "#087f8f"
+_CODE_BACKGROUND = "#f3f6f7"
+
+
+class _LightCodeStyle(PygmentsStyle):
+    """与浅色正文协调的语法配色，不使用默认 Monokai 深色背景。"""
+
+    background_color = _CODE_BACKGROUND
+    styles = {
+        Token: _INK,
+        Comment: f"italic {_MUTED}",
+        Keyword: "#77548f",
+        Keyword.Type: _CYAN,
+        Name.Builtin: _CYAN,
+        Name.Function: "#275e98",
+        Name.Class: _CYAN,
+        Name.Exception: _CYAN,
+        Name.Decorator: "#77548f",
+        String: "#487743",
+        Number: "#275e98",
+        Operator: _MUTED,
+        Generic.Heading: f"bold {_INK}",
+        Generic.Subheading: f"bold {_INK}",
+        Generic.Deleted: "#a43e44",
+        Generic.Inserted: "#487743",
+        Error: "#a43e44",
+    }
+
+
+_LIGHT_SYNTAX = PygmentsSyntaxTheme(_LightCodeStyle)
+_MARKDOWN_THEME = Theme(
+    {
+        "markdown.code": Style(color=_CYAN, bgcolor="default", bold=False),
+        "markdown.code_block": Style(color=_INK, bgcolor=_CODE_BACKGROUND),
+        "markdown.block_quote": Style(color=_MUTED),
+        "markdown.list": Style(),
+        "markdown.item.number": Style(color=_MUTED),
+        "markdown.table.border": Style(color="#d5dfe4"),
+        "markdown.table.header": Style(color=_INK, bold=True),
+        **{
+            f"markdown.h{level}": Style(color=_INK, bold=True, underline=False, italic=False, dim=False)
+            for level in range(1, 7)
+        },
+    },
+    inherit=False,
+)
+
+
+class _LightHeading(Heading):
+    LEVEL_ALIGN = {f"h{level}": "left" for level in range(1, 7)}
+
+
+class _LightCodeBlock(CodeBlock):
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        syntax = Syntax(str(self.text).rstrip(), self.lexer_name, theme=_LIGHT_SYNTAX, word_wrap=True)
+        contents: list[Any] = []
+        if self.lexer_name != "text":
+            label = "Python" if self.lexer_name == "python" else self.lexer_name
+            contents.append(Text(label, style=_MUTED))
+        contents.append(syntax)
+        yield Padding(Group(*contents), (1, 2), style=Style(bgcolor=_CODE_BACKGROUND))
+
+
+class _LightMarkdown(Markdown):
+    # 使用独立注册表，避免改变其他调用方的 Rich Markdown 行为。
+    elements = {
+        **Markdown.elements,
+        "heading_open": _LightHeading,
+        "fence": _LightCodeBlock,
+        "code_block": _LightCodeBlock,
+    }
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        # 主题必须覆盖实际渲染过程，Live 重绘和最终全文也使用同一作用域。
+        with console.use_theme(_MARKDOWN_THEME):
+            yield from super().__rich_console__(console, options)
 
 
 class _StreamPreview:
@@ -145,17 +229,18 @@ class TerminalRenderer:
         cursor = 0
         for match in _MERMAID_BLOCK.finditer(content):
             if content[cursor : match.start()].strip():
-                parts.append(Markdown(content[cursor : match.start()]))
+                parts.append(_LightMarkdown(content[cursor : match.start()]))
             parts.append(
                 Panel(
-                    Syntax(match.group(1).strip(), "text", line_numbers=True),
+                    Syntax(match.group(1).strip(), "text", theme=_LIGHT_SYNTAX, line_numbers=True, word_wrap=True),
                     title="Mermaid",
-                    border_style="cyan",
+                    style=Style(color=_INK, bgcolor=_CODE_BACKGROUND),
+                    border_style=_MUTED,
                 )
             )
             cursor = match.end()
         if content[cursor:].strip():
-            parts.append(Markdown(content[cursor:]))
+            parts.append(_LightMarkdown(content[cursor:]))
         return Group(*parts)
 
     def render_usage(self, model: str, usage: Usage | None, cost: float | None, total_cost: float) -> None:
