@@ -27,6 +27,10 @@ kairos 主入口
 
 协议实现位于 `src/kairos/providers/`：`OpenAICompatibleModel`、`AnthropicMessagesModel` 和共享的响应转换逻辑分别放在独立模块中。主程序只通过 `runtime.create_runtime()` 创建运行时，不再保留一次性 Agent 包装入口。
 
+### 上游 AI 网关
+
+当前 Kairos 的上游接入用户自己的本地 AI 网关，调用链为：`Kairos → 本地 AI 网关 → 模型服务`。网关仅透传请求和响应，不做其他处理。模型协议适配、Agent 循环和工具执行由 Kairos 自身负责。
+
 ## 流式对话与工具调用
 
 主 CLI 默认使用流式输出，OpenAI 兼容协议和 Anthropic Messages 均支持：

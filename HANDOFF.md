@@ -27,6 +27,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 ## 关键决定
 
 - 核心 agent 循环、模型适配层和记忆层手写，不在早期引入 LangChain、LiteLLM 等框架；框架只在阶段 8 做对比。
+- 上游使用用户自己的本地 AI 网关；网关仅透传请求和响应，不做其他处理。调用链与职责说明见 [README 的“上游 AI 网关”](README.md#上游-ai-网关)。
 - 当前默认模型为 `deepseek-flash`，通过 OpenAI 兼容格式调用；价格会变化，修改价格表前先核对 DeepSeek 官方定价页。
 - 注释和用户可见文字使用中文，实验过程和结论写入 `docs/learning-log.md`。
 
