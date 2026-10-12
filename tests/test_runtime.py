@@ -5,7 +5,7 @@ import pytest
 
 from kairos.pricing import Usage
 from kairos.runtime import DEFAULT_SYSTEM_PROMPT, create_runtime
-from kairos.todos import list_todos
+from kairos.todos import add_todo, list_todos
 
 
 class FakeModel:
@@ -84,7 +84,9 @@ def test_runtime_uses_registered_todo_tool_and_keeps_tool_messages(tmp_path):
         assert result.content == "待办已创建。"
         assert result.tool_results[0].name == "add_todo"
         assert result.tool_results[0].value["title"] == "测试运行时工具"
-        assert {"add_todo", "list_todos", "update_todo", "complete_todo"} == set(runtime.tool_registry.handlers)
+        assert {"add_todo", "list_todos", "update_todo", "complete_todo", "delete_todo"} == set(
+            runtime.tool_registry.handlers
+        )
         assert [todo["title"] for todo in list_todos(runtime.connection)] == ["测试运行时工具"]
         assert [message["role"] for message in result.messages] == [
             "system",
@@ -98,6 +100,79 @@ def test_runtime_uses_registered_todo_tool_and_keeps_tool_messages(tmp_path):
         assert model.calls[0]["tools"]
     finally:
         runtime.close()
+
+
+def test_runtime_exposes_delete_schema_and_returns_deleted_record_to_model(tmp_path):
+    model = FakeModel(
+        [
+            {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_delete",
+                        "type": "function",
+                        "function": {"name": "delete_todo", "arguments": '{"todo_id":1}'},
+                    }
+                ],
+            },
+            {"content": "待办已删除。", "tool_calls": []},
+        ]
+    )
+
+    with create_runtime(model=model, db_path=tmp_path / "kairos.sqlite3") as runtime:
+        target = add_todo(runtime.connection, "删除测试待办", tags=["测试"])
+        retained = add_todo(runtime.connection, "保留另一条待办")
+
+        result = runtime.respond(f"删除待办 {target['id']}")
+
+        schema = next(tool["function"] for tool in model.calls[0]["tools"] if tool["function"]["name"] == "delete_todo")
+        assert schema["parameters"]["required"] == ["todo_id"]
+        assert schema["parameters"]["properties"]["todo_id"]["type"] == "integer"
+        assert result.content == "待办已删除。"
+        assert result.tool_results[0].name == "delete_todo"
+        assert result.tool_results[0].call_id == "call_delete"
+        assert result.tool_results[0].value == target
+        assert list_todos(runtime.connection) == [retained]
+        tool_message = model.calls[1]["messages"][-1]
+        assert tool_message["role"] == "tool"
+        assert tool_message["tool_call_id"] == "call_delete"
+        assert json.loads(tool_message["content"]) == target
+
+
+def test_runtime_returns_missing_delete_error_and_continues_session(tmp_path):
+    model = FakeModel(
+        [
+            {
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_delete_missing",
+                        "type": "function",
+                        "function": {"name": "delete_todo", "arguments": '{"todo_id":999}'},
+                    }
+                ],
+            },
+            {"content": "没有找到指定待办。", "tool_calls": []},
+            {"content": "可以继续对话。", "tool_calls": []},
+        ]
+    )
+
+    with create_runtime(model=model, db_path=tmp_path / "kairos.sqlite3") as runtime:
+        retained = add_todo(runtime.connection, "保留已有待办")
+
+        result = runtime.respond("删除待办 999")
+
+        assert result.content == "没有找到指定待办。"
+        error = result.tool_results[0].value["error"]
+        assert error["type"] == "KeyError"
+        assert "找不到待办：999" in error["message"]
+        tool_message = model.calls[1]["messages"][-1]
+        assert tool_message["role"] == "tool"
+        assert tool_message["tool_call_id"] == "call_delete_missing"
+        assert json.loads(tool_message["content"]) == {"error": error}
+        assert list_todos(runtime.connection) == [retained]
+        assert runtime.respond("继续对话").content == "可以继续对话。"
+        assert tool_message in model.calls[2]["messages"]
 
 
 def test_runtime_aggregates_usage_across_tool_rounds(tmp_path):

@@ -17,11 +17,12 @@ from .config import PROJECT_ROOT, Settings
 from .observability import JsonlLogger
 from .pricing import Usage
 from .providers import AnthropicMessagesModel, OpenAICompatibleModel
-from .todos import add_todo, complete_todo, initialize_database, list_todos, update_todo
+from .todos import add_todo, complete_todo, delete_todo, initialize_database, list_todos, update_todo
 from .tool_schemas import TODO_TOOL_SCHEMAS
 
 DEFAULT_SYSTEM_PROMPT = """你是 Kairos，用户的个人助手。回答简洁直接，使用中文。
-当用户要求新增、查询、修改或完成待办时，调用对应工具；工具返回结果后再用中文说明结果。
+当用户要求新增、查询、修改、完成或删除待办时，调用对应工具；工具返回结果后再用中文说明结果。
+删除会永久移除记录，只在用户明确要求删除时执行；未提供 ID 时先查询定位，目标不明确时先询问，不猜测 ID。
 没有必要操作待办时直接回答，不要为了调用工具而调用工具。"""
 
 
@@ -63,6 +64,7 @@ def build_tool_handlers(connection: Any) -> dict[str, ToolHandler]:
         "list_todos": partial(list_todos, connection),
         "update_todo": partial(update_todo, connection),
         "complete_todo": partial(complete_todo, connection),
+        "delete_todo": partial(delete_todo, connection),
     }
 
 

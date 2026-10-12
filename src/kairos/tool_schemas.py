@@ -121,9 +121,26 @@ COMPLETE_TODO_TOOL = {
     },
 }
 
+DELETE_TODO_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "delete_todo",
+        "description": "按 ID 永久删除一条待办并返回被删除的记录。仅在用户要求删除且目标明确时调用。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "todo_id": {"type": "integer", "description": "要删除的待办 ID。"},
+            },
+            "required": ["todo_id"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 TODO_TOOL_SCHEMAS = [
     ADD_TODO_TOOL,
     LIST_TODOS_TOOL,
     UPDATE_TODO_TOOL,
     COMPLETE_TODO_TOOL,
+    DELETE_TODO_TOOL,
 ]

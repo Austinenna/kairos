@@ -1,7 +1,6 @@
 """SQLite 待办表的结构和初始化。
 
-这个模块负责待办数据表，以及最基本的新增、查询、修改和完成操作。
-模型工具的 JSON Schema 和 Agent 循环会在后续任务中加入。
+这个模块负责待办数据表，以及最基本的新增、查询、修改、完成和删除操作。
 """
 
 import json
@@ -179,3 +178,11 @@ def update_todo(connection: sqlite3.Connection, todo_id: int, **changes: object)
 def complete_todo(connection: sqlite3.Connection, todo_id: int) -> dict[str, object]:
     """把待办标记为已完成。"""
     return update_todo(connection, todo_id, status="completed")
+
+
+def delete_todo(connection: sqlite3.Connection, todo_id: int) -> dict[str, object]:
+    """按 ID 永久删除一条待办，并返回被删除的记录。"""
+    todo = _get_todo(connection, todo_id)
+    connection.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+    connection.commit()
+    return todo
