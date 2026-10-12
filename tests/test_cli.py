@@ -1,5 +1,6 @@
 from kairos.cli import run
 from kairos.runtime import AgentTurnResult, create_runtime
+from kairos.terminal_input import TerminalInputUnsupportedError
 
 
 class FakeConsole:
@@ -88,3 +89,22 @@ def test_cli_streams_during_respond_and_can_continue_after_interrupt(tmp_path):
         assert runtime.history()[-1]["content"] == "第二轮的完整回答"
     assert sum("第二轮的完整回答" in str(item) for item in console.printed) == 1
     assert any("已中断" in str(item) for item in console.printed)
+
+
+def test_dumb_terminal_falls_back_to_plain_text_input(monkeypatch):
+    from types import SimpleNamespace
+
+    from kairos import cli
+
+    def unsupported(**kwargs):
+        raise TerminalInputUnsupportedError("模拟受限终端")
+
+    monkeypatch.setattr(cli.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(cli, "TerminalInput", unsupported)
+    console = FakeConsole(["你好", "/exit"])
+    console.is_terminal = True
+    runtime = FakeRuntime()
+    runtime.check_image_budget = lambda _: None
+    run(console=console, runtime=runtime)
+    assert runtime.prompts == ["你好"]
+    assert any("文字输入模式" in str(item) for item in console.printed)

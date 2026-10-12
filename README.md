@@ -8,7 +8,7 @@ Kairos 是希腊语里“恰当的时机”。这个助手和普通聊天机器�
 
 源码参考范围见 [本地项目参考清单](references/SOURCE-MANIFEST.md)。用户无特殊说明时，只参考该清单内的本地项目，不额外补充其他项目。
 
-当前项目已完成阶段 0 的多轮对话和 token/费用统计，以及阶段 1 的 s1-1 至 s1-9。主程序现在通过 `kairos.runtime.AgentRuntime` 使用 Agent loop；`cli.py` 负责终端输入、命令和展示，`terminal_renderer.py` 负责 Rich 渲染。s1-10 的双模型对比和阶段 2 仍待完成。接手时先读 [HANDOFF.md](HANDOFF.md) 和 [CLAUDE.md](CLAUDE.md)。
+当前项目已完成阶段 0 的多轮对话和 token/费用统计，以及阶段 1 的 s1-1 至 s1-9，并支持图片输入。主程序通过 `kairos.runtime.AgentRuntime` 使用 Agent loop；`terminal_input.py` 管理终端图文草稿，`cli.py` 负责命令与提交，`terminal_renderer.py` 负责 Rich 渲染。s1-10 的双模型对比和阶段 2 仍待完成。接手时先读 [HANDOFF.md](HANDOFF.md) 和 [CLAUDE.md](CLAUDE.md)。
 
 ## 当前架构
 
@@ -24,6 +24,8 @@ kairos 主入口
 ```
 
 `src/kairos/runtime.py` 是应用的组装和协调边界：它根据 `Settings` 创建模型适配器，初始化 SQLite 和待办工具注册表，保存当前会话的 messages，并把一次用户输入交给 Agent loop。`src/kairos/cli.py` 只负责终端输入和命令，`src/kairos/terminal_renderer.py` 负责把结构化结果渲染为终端内容。
+
+交互输入由 `terminal_input.py` 的 prompt_toolkit 编辑器负责；提交后交给现有 Rich 流式输出。`clipboard.py` 封装 macOS 原生剪贴板读取，`images.py` 负责图片校验、处理、快照和摘要。普通管道和功能受限的终端保留文字输入。
 
 协议实现位于 `src/kairos/providers/`：`OpenAICompatibleModel`、`AnthropicMessagesModel` 和共享的响应转换逻辑分别放在独立模块中。主程序只通过 `runtime.create_runtime()` 创建运行时，不再保留一次性 Agent 包装入口。
 
@@ -54,11 +56,28 @@ cp .env.example .env      # 然后在 .env 里选择 KAIROS_PROVIDER 并填入�
 uv run kairos
 ```
 
+## 图片输入
+
+在 macOS 交互终端运行 `uv run kairos`，复制截图后按 **Ctrl+V**，或把图片文件拖入输入框。图片以 `[图片 N]` 标签显示，可以继续编辑问题，按 **Enter** 将文字和图片一起发送。只有图片时默认要求描述图片；**Alt+Enter** 可以换行。
+
+- 图片标签右侧按 Backspace 移除附件，标签内的 Delete 也会移除整张图片。下方显示名称、加载状态及处理前后的尺寸。
+- 可以连续添加多张图；加载在后台串行进行，期间可编辑文字。失败附件需要删除后重新添加，加载中不能提交。
+- 支持完整图片路径的粘贴，包含引号或 shell 转义的空格、中文文件名。若终端拖放只插入普通路径，先在路径独占输入区时按 Enter 转成附件，再补充问题并发送。正文中提到的路径不会自动上传。
+- Ctrl+V 主动读取系统剪贴板，支持截图位图、Finder 复制的图片文件和文字；普通文字粘贴不会顺带读取旧剪贴板图片。Cmd+V 是否能传图片由终端决定。
+- `/help`、`/history`、`/think` 等命令不消耗待发图片；`/file 路径` 可把文本文件正文与待发图片一起提交。`/reset` 和更换 system 提示词会同时清空会话和附件草稿。
+- 请求失败且本轮输入被撤回时恢复原草稿；如果已保留完整模型回答或工具执行历史，则提示继续对话，不自动重新发送或执行工具。
+
+第一版接受静态 **PNG、JPEG、WebP**，根据实际内容验证格式，校正 EXIF 方向，并按需缩放或压缩；动画、损坏或无法处理的图片会明确报错。项目限额为：输入文件 20 MiB、6400 万像素，处理后最长边 2000 像素、编码图片文件 3 MiB；整段会话最多 8 张、累计 Base64 16 MiB。数量和体积限制同时生效，超限只拒绝新增图片，不自动删除旧图。这些是项目策略，不等同于网关或厂商的通用上限。
+
+图片加入草稿后保留处理好的内存快照，后续请求不再读取原文件；已发送图片随历史继续用于追问和工具续轮。OpenAI 适配器转换为 `image_url` data URL，Anthropic 转为 `image.source`。会话退出后不恢复图片，暂不提供图片生成、独立看图模型或模型主动读图工具。
+
+代码可使用 `load_image(path)` 和 `runtime.respond(prompt, images=(image,), on_event=handler)`；纯文字接口保持兼容。可选 `image_labels` 保留输入区中的稳定编号。真实载荷在 `runtime.messages` 中；`history()`、观察事件、JSONL 和错误展示使用图片摘要，不打印 Base64。图片用量采用 API 返回值。
+
 ## 命令
 
 | 命令 | 作用 |
 |---|---|
-| `/history` | 查看当前的 messages 列表（下一次请求会把它整个发出去） |
+| `/history` | 查看会话历史；图片仅显示摘要，实际请求保留完整图片 |
 | `/system 文本` | 替换 system 提示词，并清空对话 |
 | `/think` | 开关思考模式 |
 | `/file 路径` | 把一个文本文件的内容作为消息发出去 |
@@ -95,7 +114,9 @@ ANTHROPIC_BASE_URL=https://gateway.example
 
 ## 当前验证基线
 
-离线测试覆盖主 CLI、统一运行时、Agent loop、两种协议的流式适配和终端渲染。使用真实 SDK 加模拟 SSE 验证正文提前显示、整批工具等待与串行执行、工具历史回传、用量汇总、截断拒绝和中断恢复；没有请求真实网关。
+离线测试覆盖主 CLI、图文输入、图片处理、统一运行时、Agent loop、两种协议的流式适配和终端渲染。使用真实 SDK 加模拟 SSE 验证正文提前显示、整批工具等待、图片历史回放、用量汇总、截断拒绝、中断恢复和载荷脱敏；终端输入使用真实 prompt_toolkit 的 pipe input 验证。
+
+2026-10-12 使用合成图片通过现有网关验证了 `deepseek-flash` 的 OpenAI／Anthropic 两种协议：识别图片中的随机代号、纯文字追问、按图片内容创建临时待办，均流式完成。待办仅写入临时数据库。macOS 原生剪贴板在隔离的临时 pasteboard 上验证文字、文件 URL、PNG 和空内容，不读取用户剪贴板。Finder 手工拖放及具体终端的 Cmd+V 仍需用户实际体验；两家不同模型的对比仍未完成。
 
 ## 进度
 

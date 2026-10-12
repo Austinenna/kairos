@@ -9,6 +9,8 @@ from collections.abc import Callable, Mapping
 from time import perf_counter
 from typing import Any, Protocol, runtime_checkable
 
+from .images import redact_images
+
 
 class Model(Protocol):
     """模型需要提供的最小接口。"""
@@ -29,6 +31,27 @@ EventLogger = Callable[[dict[str, Any]], None]
 
 class AgentLoopLimitError(RuntimeError):
     """模型连续请求工具，超过了允许的工具响应轮数。"""
+
+
+def sanitize_error(error: BaseException | str, messages: list[dict]) -> str:
+    """SDK 可能把请求附在错误中；展示错误时移除已知图片字节。"""
+
+    text = str(error)
+
+    def remove_image_data(value: object) -> None:
+        nonlocal text
+        if isinstance(value, dict):
+            if value.get("type") == "image" and isinstance(value.get("data"), str) and value["data"]:
+                text = text.replace(value["data"].replace("/", "\\/"), "[图片数据已隐藏]")
+                text = text.replace(value["data"], "[图片数据已隐藏]")
+            for child in value.values():
+                remove_image_data(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                remove_image_data(child)
+
+    remove_image_data(messages)
+    return redact_images(text)
 
 
 def _assistant_message(response: dict, tool_calls: list[dict]) -> dict:
@@ -101,6 +124,7 @@ def run_agent_turn(
     request_number = 0
 
     def emit(event: dict[str, Any]) -> None:
+        event = redact_images(event)
         if logger:
             logger(event)
         if on_event:
@@ -108,7 +132,7 @@ def run_agent_turn(
 
     def text_delta(text: str) -> None:
         if text and on_event:
-            on_event({"event": "text_delta", "request_number": request_number, "text": text})
+            on_event(redact_images({"event": "text_delta", "request_number": request_number, "text": text}))
 
     while True:
         request_number += 1
@@ -135,7 +159,7 @@ def run_agent_turn(
                     "event": "model_error",
                     "request_number": request_number,
                     "tool_round": tool_rounds,
-                    "error": {"type": type(error).__name__, "message": str(error)},
+                    "error": {"type": type(error).__name__, "message": sanitize_error(error, messages)},
                     "duration_ms": round((perf_counter() - model_started) * 1000, 3),
                 }
             )

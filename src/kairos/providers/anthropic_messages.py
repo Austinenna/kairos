@@ -8,6 +8,27 @@ from typing import Any
 from .common import field
 
 
+def anthropic_user_content(content: str | list[dict]) -> str | list[dict]:
+    """将内部图文内容投影到 Messages 协议，不转发附件元数据。"""
+
+    if not isinstance(content, list):
+        return content
+    converted = []
+    for block in content:
+        if block.get("type") == "image":
+            converted.append(
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": block["mime_type"], "data": block["data"]},
+                }
+            )
+        elif block.get("type") == "text":
+            converted.append({"type": "text", "text": block["text"]})
+        else:
+            raise ValueError("Anthropic 用户消息包含不支持的内容块")
+    return converted
+
+
 def anthropic_tools(tools: list[dict]) -> list[dict]:
     """把 OpenAI 风格的函数工具定义转换成 Anthropic 的工具定义。"""
 
@@ -61,7 +82,7 @@ def anthropic_messages(messages: list[dict]) -> tuple[str | None, list[dict]]:
 
         flush_tool_results()
         if role == "user":
-            converted.append({"role": "user", "content": message.get("content") or ""})
+            converted.append({"role": "user", "content": anthropic_user_content(message.get("content") or "")})
             continue
 
         if role == "assistant":

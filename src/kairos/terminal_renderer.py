@@ -19,6 +19,7 @@ from rich.segment import Segment
 from rich.syntax import Syntax
 from rich.text import Text
 
+from .images import redact_images
 from .pricing import CONTEXT_WINDOW, Usage, estimate_cost, is_peak
 from .runtime import AgentTurnResult
 
@@ -113,7 +114,7 @@ class TerminalRenderer:
         self.console.print(message)
 
     def history(self, messages: list[dict]) -> None:
-        self.console.print_json(data=messages)
+        self.console.print_json(data=redact_images(messages))
 
     def render_turn(
         self, result: AgentTurnResult, *, model: str, total_cost: float, content_streamed: bool = False

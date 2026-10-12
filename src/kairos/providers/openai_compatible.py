@@ -9,6 +9,38 @@ from openai import OpenAI
 from .common import field, normalize_tool_call
 
 
+def openai_user_content(content: str | list[dict]) -> str | list[dict]:
+    """只转换用户内容块，内部附件元数据不进入模型协议。"""
+
+    if not isinstance(content, list):
+        return content
+    converted = []
+    for block in content:
+        if block.get("type") == "image":
+            converted.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{block['mime_type']};base64,{block['data']}"},
+                }
+            )
+        elif block.get("type") == "text":
+            converted.append({"type": "text", "text": block["text"]})
+        else:
+            raise ValueError("OpenAI 用户消息包含不支持的内容块")
+    return converted
+
+
+def openai_messages(messages: list[dict]) -> list[dict]:
+    """保持 assistant 与 tool 消息字段，只投影用户的图文内容。"""
+
+    return [
+        {**message, "content": openai_user_content(message.get("content", ""))}
+        if message.get("role") == "user"
+        else dict(message)
+        for message in messages
+    ]
+
+
 class OpenAICompatibleModel:
     """调用 OpenAI 兼容接口，并返回 Agent Loop 使用的统一字典。"""
 
@@ -26,7 +58,7 @@ class OpenAICompatibleModel:
         self.client = client or OpenAI(api_key=api_key, base_url=base_url)
 
     def complete(self, *, messages: list[dict], tools: list[dict]) -> dict:
-        request = {"model": self.model, "messages": messages, "tools": tools}
+        request = {"model": self.model, "messages": openai_messages(messages), "tools": tools}
         if self.extra_body is not None:
             request["extra_body"] = self.extra_body
         response = self.client.chat.completions.create(**request)
@@ -63,7 +95,7 @@ class OpenAICompatibleModel:
 
         request: dict[str, Any] = {
             "model": self.model,
-            "messages": messages,
+            "messages": openai_messages(messages),
             "tools": tools,
             "stream": True,
             "stream_options": {"include_usage": True},

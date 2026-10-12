@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .images import redact_images
+
 
 class JsonlLogger:
     """把 Agent 事件追加写入本地 JSONL 文件。"""
@@ -21,7 +23,7 @@ class JsonlLogger:
     def __call__(self, event: dict[str, Any]) -> None:
         record = {
             "timestamp": datetime.now(UTC).isoformat(),
-            **event,
+            **redact_images(event),
         }
         with self.path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")

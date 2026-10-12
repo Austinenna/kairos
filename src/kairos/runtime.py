@@ -7,13 +7,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
 
-from .agent_loop import EventLogger, Model, ToolHandler, run_agent_turn
+from .agent_loop import EventLogger, Model, ToolHandler, run_agent_turn, sanitize_error
 from .config import PROJECT_ROOT, Settings
+from .images import ImageInput, redact_images, validate_image_budget
 from .observability import JsonlLogger
 from .pricing import Usage
 from .providers import AnthropicMessagesModel, OpenAICompatibleModel
@@ -188,26 +190,49 @@ class AgentRuntime:
         self.system_prompt = system_prompt
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
         self.last_result: AgentTurnResult | None = None
+        self.last_input_retained = False
         self._closed = False
 
     @property
     def model_name(self) -> str:
         return str(getattr(self.model, "model", "unknown"))
 
-    def respond(self, prompt: str, *, on_event: EventLogger | None = None) -> AgentTurnResult:
+    def respond(
+        self,
+        prompt: str,
+        *,
+        images: Sequence[ImageInput] = (),
+        image_labels: Sequence[str] = (),
+        on_event: EventLogger | None = None,
+    ) -> AgentTurnResult:
         """处理用户消息；可用 on_event 实时观察正文，最终仍返回完整回合结果。
 
         未完成的模型响应不进入历史；已经执行的工具调用和结果在中断后保留。
         """
 
+        self.last_input_retained = False
+        self.last_result = None
         if self._closed:
             raise RuntimeError("AgentRuntime 已经关闭")
-        if not isinstance(prompt, str) or not prompt.strip():
+        if not isinstance(prompt, str) or (not prompt.strip() and not images):
             raise ValueError("用户消息不能为空")
+        images = tuple(images)
+        labels = tuple(image_labels) or tuple(f"图片 {index}" for index in range(1, len(images) + 1))
+        if len(labels) != len(images) or any(not isinstance(label, str) or not label.strip() for label in labels):
+            raise ValueError("图片标签必须与附件一一对应")
+        if len(set(labels)) != len(labels):
+            raise ValueError("图片标签不能重复")
+        self.check_image_budget(images)
+        content: str | list[dict] = prompt
+        if images:
+            content = [{"type": "text", "text": prompt if prompt.strip() else "请描述这些图片。"}]
+            for label, image in zip(labels, images, strict=True):
+                content.append({"type": "text", "text": f"[{label}：{image.name}]"})
+                content.append(image.to_block())
 
         original_length = len(self.messages)
-        self.last_result = None
-        self.messages.append({"role": "user", "content": prompt})
+        self.messages.append({"role": "user", "content": content})
+        self.last_input_retained = True
         events: list[dict[str, Any]] = []
 
         def record(event: dict[str, Any]) -> None:
@@ -225,11 +250,15 @@ class AgentRuntime:
                 logger=record,
                 on_event=on_event,
             )
-        except (Exception, KeyboardInterrupt):
+        except (Exception, KeyboardInterrupt) as error:
+            safe_error = sanitize_error(error, self.messages)
             # 尚未保存完整模型消息时撤回本轮输入。若已有工具执行，则保留其
             # 完整历史，不能让下次请求因遗忘这些副作用而重复执行。
             if len(self.messages) == original_length + 1:
                 del self.messages[original_length:]
+                self.last_input_retained = False
+            if isinstance(error, Exception) and safe_error != str(error):
+                raise RuntimeError(safe_error) from None
             raise
 
         result = AgentTurnResult(
@@ -252,6 +281,12 @@ class AgentRuntime:
             self.system_prompt = system_prompt
         self.messages = [{"role": "system", "content": self.system_prompt}]
         self.last_result = None
+        self.last_input_retained = False
+
+    def check_image_budget(self, images: Sequence[ImageInput]) -> None:
+        """在草稿或用户消息进入历史前检查整个会话的图片预算。"""
+
+        validate_image_budget(self.messages, images)
 
     def set_thinking(self, enabled: bool) -> None:
         """更新支持该参数的模型的思考模式。"""
@@ -261,9 +296,9 @@ class AgentRuntime:
             self.model.extra_body = {"thinking": {"type": "enabled" if enabled else "disabled"}}
 
     def history(self) -> list[dict]:
-        """返回当前对话历史的浅拷贝，供 CLI 查看。"""
+        """返回图片已替换成摘要的独立副本，供 CLI 查看。"""
 
-        return list(self.messages)
+        return redact_images(self.messages)
 
     def close(self) -> None:
         """关闭运行时持有的数据库连接。"""
