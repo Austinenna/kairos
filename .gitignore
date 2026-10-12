@@ -20,5 +20,6 @@ data/
 .mypy_cache/
 *.egg-info/
 
-# 本地源码参考仓库（各自独立 Git 仓库，不纳入 Kairos）
-references/
+# 本地参考源码不纳入 Kairos Git，只跟踪参考清单
+references/*
+!references/SOURCE-MANIFEST.md
