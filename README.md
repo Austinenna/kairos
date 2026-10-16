@@ -8,6 +8,8 @@ Kairos 是希腊语里“恰当的时机”。这个助手和普通聊天机器�
 
 源码参考范围见 [本地项目参考清单](references/SOURCE-MANIFEST.md)。用户无特殊说明时，只参考该清单内的本地项目，不额外补充其他项目。
 
+会话系统的通用对象、ID 生成方及关联关系见 [会话系统设计](docs/会话系统设计.md)（设计方案，尚未实现）。
+
 当前项目已完成阶段 0 的多轮对话和 token/费用统计，以及阶段 1 的 s1-1 至 s1-9，并支持图片输入。主程序通过 `kairos.runtime.AgentRuntime` 使用 Agent loop；`terminal_input.py` 管理终端图文草稿，`cli.py` 负责命令与提交，`terminal_renderer.py` 负责 Rich 渲染。s1-10 的双模型对比和阶段 2 仍待完成。接手时先读 [HANDOFF.md](HANDOFF.md) 和 [CLAUDE.md](CLAUDE.md)。
 
 ## 当前架构
