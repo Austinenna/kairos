@@ -103,7 +103,7 @@ class TerminalInput:
 
     read() 延续内部草稿，read(draft=...) 替换并恢复草稿。普通提交和 /file
     返回图片并清空内部草稿；其他斜杠命令只返回文字，附件继续保留。
-    调用方执行 /reset 或更换 system 后应 clear()；退出时应 close()。
+    调用方新建、恢复会话或更换 system 后应 clear()；退出时应 close()。
     """
 
     def __init__(

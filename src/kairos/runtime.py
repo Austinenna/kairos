@@ -7,18 +7,22 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any
 
-from .agent_loop import EventLogger, Model, ToolHandler, run_agent_turn, sanitize_error
+from .agent_loop import AgentLoopLimitError, EventLogger, Model, ToolHandler, run_agent_turn, sanitize_error
 from .config import PROJECT_ROOT, Settings
+from .execution import TurnRecorder
 from .images import ImageInput, redact_images, validate_image_budget
 from .observability import JsonlLogger
 from .pricing import Usage
 from .providers import AnthropicMessagesModel, OpenAICompatibleModel
+from .sessions import SessionInfo, SessionStore
 from .todos import add_todo, complete_todo, delete_todo, initialize_database, list_todos, update_todo
 from .tool_schemas import TODO_TOOL_SCHEMAS
 
@@ -44,6 +48,7 @@ class ToolResult:
     name: str
     value: object
     content: str
+    step_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -56,18 +61,48 @@ class AgentTurnResult:
     finish_reason: str | None
     events: list[dict[str, Any]]
     tool_results: list[ToolResult]
+    session_id: str | None = None
+    turn_id: str | None = None
+    step_ids: tuple[str, ...] = ()
 
 
 def build_tool_handlers(connection: Any) -> dict[str, ToolHandler]:
     """把数据库连接绑定到待办工具函数。"""
 
     return {
-        "add_todo": partial(add_todo, connection),
-        "list_todos": partial(list_todos, connection),
-        "update_todo": partial(update_todo, connection),
-        "complete_todo": partial(complete_todo, connection),
-        "delete_todo": partial(delete_todo, connection),
+        "add_todo": partial(_database_tool, connection, add_todo),
+        "list_todos": partial(_database_tool, connection, list_todos),
+        "update_todo": partial(_database_tool, connection, update_todo),
+        "complete_todo": partial(_database_tool, connection, complete_todo),
+        "delete_todo": partial(_database_tool, connection, delete_todo),
     }
+
+
+def _database_tool(connection: Any, handler: ToolHandler, **arguments: Any) -> object:
+    """为数据库工具调用提供提交或回滚边界。
+
+    作用:
+        作为已注册数据库工具的包装器，接收 Agent 循环提供的参数并执行工具。
+        工具异常时回滚尚未提交的事务，便于会话存储随后独立保存错误结果。
+
+    参数:
+        connection: 支持上下文管理的数据库连接，作为第一个参数传给工具。
+        handler: 实际执行数据库操作的工具函数。
+        arguments: 工具的关键字参数，原样转交 handler。
+
+    返回:
+        handler 的原始返回值；本函数不转换工具结果。
+
+    行为说明:
+        1. 进入连接的上下文，在其中调用 handler(connection, **arguments)。
+        2. 正常退出时提交尚未提交的事务；异常退出时回滚尚未提交的事务。
+        3. 此边界不撤销工具自行提前提交的写入，也不处理数据库以外的副作用。
+    """
+
+    # SQL 参数绑定等错误也可能已经打开事务。工具负责回滚自己的写入，
+    # 会话存储才能独立保存错误结果，不能把遗留事务顺带提交。
+    with connection:
+        return handler(connection, **arguments)
 
 
 def build_tool_registry(connection: Any) -> ToolRegistry:
@@ -162,9 +197,35 @@ def _tool_results(events: list[dict[str, Any]]) -> list[ToolResult]:
                 name=str(event.get("tool_name", "")),
                 value=value,
                 content=content,
+                step_id=event.get("step_id"),
             )
         )
     return results
+
+
+def _model_provider(model: Model) -> str:
+    """识别模型适配器对应的会话协议名称。
+
+    作用:
+        为新建会话的协议记录和恢复时的兼容性检查提供统一名称，不发起模型请求。
+
+    参数:
+        model: 当前使用或调用方注入的模型对象。
+
+    返回:
+        OpenAICompatibleModel 返回 "openai"，AnthropicMessagesModel 返回
+        "anthropic"，其他对象返回 "custom"。
+
+    行为说明:
+        1. 按适配器类型依次判断，子类也使用对应协议名称。
+        2. 未识别的模型统一标记为 custom，不尝试从名称推断协议。
+    """
+
+    if isinstance(model, OpenAICompatibleModel):
+        return "openai"
+    if isinstance(model, AnthropicMessagesModel):
+        return "anthropic"
+    return "custom"
 
 
 class AgentRuntime:
@@ -180,7 +241,47 @@ class AgentRuntime:
         logger: EventLogger | None = None,
         max_tool_rounds: int = 8,
         thinking_enabled: bool = False,
+        session_store: SessionStore | None = None,
+        session_info: SessionInfo | None = None,
+        model_settings: Settings | None = None,
+        model_client: Any | None = None,
+        rebuild_model: bool = False,
+        owns_model_client: bool = False,
     ) -> None:
+        """组装运行依赖并激活新建或已有会话。
+
+        作用:
+            接收工厂或调用方提供的模型、数据库和工具，建立可执行回合的运行时。
+            新建时保存会话及系统消息；恢复时加载历史，并按需修补中断记录。
+
+        参数:
+            model: 已创建的模型适配器；直接传入本构造函数时，由调用方保证与
+                session_info 的协议和模型兼容，构造函数不执行该兼容性检查。
+            connection: 供运行时和数据库工具使用的连接，close 时由运行时关闭。
+            tool_registry: 模型可见的工具定义及实际执行函数。
+            system_prompt: 新会话的系统提示词；恢复时改用历史中的系统提示词。
+            logger: 可选的事件记录回调，执行回合时接收观察事件。
+            max_tool_rounds: 包含工具调用的模型响应轮数上限，构造时不校验取值。
+                同一响应中的多个工具只计一轮，最终纯文字回答不计入此上限。
+            thinking_enabled: 新会话的思考开关；恢复时采用会话保存的值。
+            session_store: 可选的会话存储；省略时使用 connection 初始化。
+                注入时由调用方保证它与运行时使用兼容的连接。
+            session_info: 要恢复的会话元信息；省略时立即创建新会话。
+            model_settings: 重建模型时使用的当前配置，包括认证信息。
+            model_client: 工厂创建适配器时使用的外部客户端，供切换模型时复用。
+            rebuild_model: 是否允许恢复会话时按保存的配置重建模型适配器。
+            owns_model_client: 是否由运行时负责关闭模型关联的 SDK 客户端。
+
+        返回:
+            None。初始化后的实例持有当前会话 ID、模型上下文及执行依赖。
+
+        行为说明:
+            1. 保存依赖和资源归属标记，初始化回合状态及上次执行结果。
+            2. 使用注入的存储或创建存储；无 session_info 时保存新会话。
+            3. 激活目标会话并加载上下文；此处不运行历史工具，也不请求模型。
+            4. 构造失败时不自行关闭依赖；通过 create_runtime 创建时由工厂清理。
+        """
+
         self.model = model
         self.connection = connection
         self.tool_registry = tool_registry
@@ -188,14 +289,308 @@ class AgentRuntime:
         self.max_tool_rounds = max_tool_rounds
         self.thinking_enabled = thinking_enabled
         self.system_prompt = system_prompt
-        self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
+        self.messages: list[dict] = []
         self.last_result: AgentTurnResult | None = None
         self.last_input_retained = False
         self._closed = False
+        self._responding = False
+        self._storage_failed = False
+        self._model_settings = model_settings
+        self._model_client = model_client
+        self._rebuild_model = rebuild_model
+        self._owns_model_client = owns_model_client
+        self.recovered_turns = 0
+        self.session_store = session_store or SessionStore(connection)
+        info = session_info or self.session_store.create_session(
+            system_prompt,
+            provider=_model_provider(model),
+            model=self.model_name,
+            thinking_enabled=thinking_enabled,
+        )
+        self._activate_session(info, recover=session_info is not None)
 
     @property
     def model_name(self) -> str:
         return str(getattr(self.model, "model", "unknown"))
+
+    @property
+    def session_id(self) -> str:
+        """返回当前激活会话的稳定 ID。
+
+        作用:
+            向 CLI、记录器和会话操作提供当前对话身份，不读取数据库。
+
+        参数:
+            无显式参数；读取实例的 _session_id。
+
+        返回:
+            当前会话的 ID；恢复会话时沿用保存的原 ID。
+
+        行为说明:
+            1. 直接返回激活会话时保存的 ID，不生成新值，也不更新活动时间。
+        """
+
+        return self._session_id
+
+    @property
+    def session_info(self) -> SessionInfo:
+        """读取当前会话的最新元信息。
+
+        作用:
+            为调用方提供数据库中的标题、设置和消息数，避免使用过期的内存概要。
+
+        参数:
+            无显式参数；使用当前 session_id 和 session_store。
+
+        返回:
+            当前会话的概要记录（SessionInfo）。
+
+        行为说明:
+            1. 检查运行时尚未关闭，再按当前 ID 查询会话，不修改存储内容。
+        """
+
+        self._ensure_open()
+        return self.session_store.get_session(self.session_id)
+
+    def _ensure_open(self) -> None:
+        """检查运行时是否仍可使用其持有的资源。
+
+        作用:
+            作为读取和修改操作的前置检查，阻止已关闭实例继续访问数据库。
+
+        参数:
+            无显式参数；读取实例的 _closed 标记。
+
+        返回:
+            None，表示运行时尚未标记为关闭。
+
+        异常:
+            RuntimeError: _closed 为 True，显式拒绝继续使用已关闭的运行时。
+
+        行为说明:
+            1. 只检查本实例的关闭标记，不探测连接是否被外部代码关闭。
+        """
+
+        if self._closed:
+            raise RuntimeError("AgentRuntime 已经关闭")
+
+    def _ensure_idle(self) -> None:
+        """检查运行时是否打开且没有正在执行的回合。
+
+        作用:
+            在切换会话、修改配置或释放资源前检查状态，避免影响当前回合。
+
+        参数:
+            无显式参数；读取实例的 _closed 和 _responding 标记。
+
+        返回:
+            None，表示本实例允许开始需要空闲状态的操作。
+
+        异常:
+            RuntimeError: _responding 为 True，当前回合仍在执行。
+
+        行为说明:
+            1. 先检查关闭状态，再检查回合执行标记；本函数不改变任何状态。
+            2. 此检查依赖当前实例的标记，不提供跨线程或跨进程锁。
+        """
+
+        self._ensure_open()
+        if self._responding:
+            raise RuntimeError("当前回合仍在执行，请等待结束后再操作会话")
+
+    def _activate_session(self, info: SessionInfo, *, recover: bool) -> None:
+        """加载目标会话的上下文并更新当前会话状态。
+
+        作用:
+            供初始化、新建和恢复操作共用，连接持久会话与运行时的内存消息。
+            按需修补中断记录并更新活动时间，成功后清除上次结果和保存故障标记。
+
+        参数:
+            info: 已保存会话的元信息，提供 session_id 和 thinking_enabled。
+            recover: 是否先修补中断回合；新会话为 False，恢复已有会话为 True。
+
+        返回:
+            None。实例改为持有目标会话的上下文、提示词及思考设置。
+
+        异常:
+            ValueError: 历史消息为空，或首条消息不是 role="system"，或其 content
+                不是字符串，无法作为恢复后的系统提示词。
+
+        行为说明:
+            1. 按 recover 决定是否修补中断记录，再加载 in_context 消息。
+               修补只补齐记录和状态，不重新执行工具。
+            2. 校验系统消息及图片预算，通过后更新活动时间，再替换内存上下文。
+               前面的修补可能已经提交，因此加载失败不代表数据库完全未改变。
+            3. 应用保存的思考开关，重置上次结果、输入保留标记和存储故障标记，
+               并记录本次修补的回合数；调用方负责事先检查空闲状态。
+        """
+
+        recovered = self.session_store.recover_session(info.session_id) if recover else 0
+        messages = [record.payload for record in self.session_store.load_messages(info.session_id)]
+        if not messages or messages[0].get("role") != "system" or not isinstance(messages[0].get("content"), str):
+            raise ValueError("会话缺少有效的 system 提示词，无法恢复")
+        validate_image_budget(messages, ())
+        self.session_store.touch_session(info.session_id)
+        self._session_id = info.session_id
+        self.messages = messages
+        self.system_prompt = messages[0]["content"]
+        self._apply_thinking(info.thinking_enabled)
+        self.last_result = None
+        self.last_input_retained = False
+        self.recovered_turns = recovered
+        self._storage_failed = False
+
+    def new_session(self, title: str | None = None, system_prompt: str | None = None) -> SessionInfo:
+        """创建并激活一个新的持久化会话。
+
+        作用:
+            响应新建对话或重置上下文操作，保存新会话及系统消息并切换运行时。
+            旧会话历史与工具的业务数据继续保留。
+
+        参数:
+            title: 可选的手动标题；给出时必须是去除首尾空白后非空的字符串。
+                省略时使用默认标题，接受第一条输入后由存储自动命名。
+            system_prompt: 新会话的系统提示词；None 表示继承当前提示词。
+
+        返回:
+            已激活的新会话元信息（SessionInfo）。
+
+        行为说明:
+            1. 检查空闲状态，沿用当前协议、模型名称和思考设置创建会话。
+            2. 不执行中断恢复，直接加载新会话并返回最新概要。
+            3. 创建和激活是分开的操作；激活失败时，已创建的会话仍可能保存在库中。
+        """
+
+        self._ensure_idle()
+        info = self.session_store.create_session(
+            self.system_prompt if system_prompt is None else system_prompt,
+            provider=_model_provider(self.model),
+            model=self.model_name,
+            thinking_enabled=self.thinking_enabled,
+            title=title,
+        )
+        self._activate_session(info, recover=False)
+        return self.session_info
+
+    def list_sessions(self) -> list[SessionInfo]:
+        """按最近活动顺序列出可见的历史会话。
+
+        作用:
+            为会话选择界面提供存储中的概要列表，不切换当前会话。
+
+        参数:
+            无显式参数；读取实例的 session_store，使用存储默认的 50 条上限。
+
+        返回:
+            按最近活动时间倒序排列的 SessionInfo 列表；无可见会话时返回空列表。
+
+        行为说明:
+            1. 检查运行时尚未关闭，再调用存储查询。
+            2. 隐藏从未开始回合且没有手动标题的空会话，不更新活动时间。
+        """
+
+        self._ensure_open()
+        return self.session_store.list_sessions()
+
+    def rename_session(self, title: str) -> SessionInfo:
+        """保存当前会话的手动标题。
+
+        作用:
+            接收 CLI 或其他调用方提供的标题，更新持久会话及最后活动时间。
+
+        参数:
+            title: 新标题，必须是去除首尾空白后非空的字符串；由存储层校验。
+
+        返回:
+            保存新标题后的会话元信息（SessionInfo）。
+
+        行为说明:
+            1. 检查空闲状态，再将当前会话 ID 和标题交给存储层。
+            2. 存储层标记标题为手动设置，首条用户输入不再自动覆盖该标题。
+        """
+
+        self._ensure_idle()
+        return self.session_store.rename_session(self.session_id, title)
+
+    def resume_session(self, reference: str) -> SessionInfo:
+        """恢复指定会话的历史、系统提示词和模型配置。
+
+        作用:
+            将 CLI 或调用方选择的已有会话激活到当前运行时，修补中断记录。
+            必要时重建适配器；恢复只操作历史和配置，不重新执行历史工具。
+
+        参数:
+            reference: 目标会话的完整 ID 或可唯一匹配的非空前缀。
+                前缀不匹配或匹配多个会话时，由存储层拒绝恢复。
+
+        返回:
+            恢复并激活后的会话元信息（SessionInfo）。
+
+        异常:
+            ValueError: 协议或模型名称与当前模型不同时，满足以下任一情况:
+                - 不允许重建模型，或缺少重建所需的 model_settings;
+                - 目标会话的协议不是 openai 或 anthropic，需要显式注入匹配模型;
+                - 已注入 model_client，且目标会话需要切换协议。
+            捕获的原异常（显式重新抛出）: 激活目标会话失败或被中断时，按客户端
+                归属尝试关闭此次新建的客户端，再重新抛出原异常。
+
+        行为说明:
+            1. 检查空闲状态并读取会话；协议或模型变化时，按允许的重建策略
+               准备适配器，认证信息仍来自当前配置，不从历史中恢复密钥。
+            2. 激活目标会话。激活失败时，关闭此次新建且未使用注入客户端的
+               适配器客户端；已经完成的数据库修补不会因此撤销。
+            3. 激活成功后替换模型并应用思考设置；仅在拥有关闭权时释放旧客户端。
+               旧客户端关闭失败可能发生在切换已经完成之后。
+        """
+
+        self._ensure_idle()
+        info = self.session_store.get_session(reference)
+        model = self.model
+        if (info.provider, info.model) != (_model_provider(model), self.model_name):
+            if not self._rebuild_model or self._model_settings is None:
+                raise ValueError("恢复会话需要相同协议和模型；请传入与该会话匹配的模型")
+            if info.provider not in {"openai", "anthropic"}:
+                raise ValueError("该会话使用自定义模型，请显式传入匹配的模型后恢复")
+            if self._model_client is not None and info.provider != _model_provider(model):
+                raise ValueError("注入的客户端不能跨协议切换，请使用对应协议的客户端重新恢复")
+            saved_settings = self._model_settings.model_copy(
+                update={"kairos_provider": info.provider, "kairos_model": info.model}
+            )
+            model = build_model(saved_settings, self._model_client, thinking_enabled=info.thinking_enabled)
+
+        previous_model = self.model
+        try:
+            self._activate_session(info, recover=True)
+        except (Exception, KeyboardInterrupt):
+            if model is not previous_model and self._model_client is None:
+                self._close_model_client(model)
+            raise
+        self.model = model
+        self._apply_thinking(info.thinking_enabled)
+        if model is not previous_model and self._owns_model_client:
+            self._close_model_client(previous_model)
+        return self.session_info
+
+    def session_details(self) -> dict:
+        """读取当前会话的完整关联记录并生成图片摘要。
+
+        作用:
+            为 ID 关系检查和历史审计提供展示数据，包含已退出模型上下文的消息。
+
+        参数:
+            无显式参数；按当前 session_id 读取 session_store。
+
+        返回:
+            包含 session、turns、steps、messages 和 tool_calls 的字典。
+            图片数据替换为摘要，保留对象 ID 与关联字段。
+
+        行为说明:
+            1. 检查运行时尚未关闭，再加载五类对象及全部消息记录。
+            2. 对结果生成图片脱敏副本，不修改数据库，也不改变模型上下文。
+        """
+
+        self._ensure_open()
+        return redact_images(self.session_store.inspect(self.session_id))
 
     def respond(
         self,
@@ -205,15 +600,59 @@ class AgentRuntime:
         image_labels: Sequence[str] = (),
         on_event: EventLogger | None = None,
     ) -> AgentTurnResult:
-        """处理用户消息；可用 on_event 实时观察正文，最终仍返回完整回合结果。
+        """处理一次用户输入并保存完整回合的执行记录。
 
-        未完成的模型响应不进入历史；已经执行的工具调用和结果在中断后保留。
+        作用:
+            接收文字及已加载的图片，在会话中建立 Turn 和用户消息，再驱动
+            Agent 循环请求模型、执行工具和保存 Step，最终向调用方返回本轮结果。
+
+        参数:
+            prompt: 用户文字，必须为字符串；没有图片时还必须包含非空白内容。
+            images: 已加载验证的 ImageInput 序列，新增后不得超过整个会话的图片预算。
+            image_labels: 图片标签；省略时生成“图片 1”等标签。给出时必须与图片
+                数量相同，每个标签均为非空白字符串且互不重复。
+            on_event: 可选的实时事件回调，接收循环输出的正文增量和执行关联 ID。
+                实例 logger 另行接收用于记录和汇总的观察事件。
+
+        返回:
+            完成回合的 AgentTurnResult，包含最终正文、消息副本、汇总用量、
+            工具结果及 session_id、turn_id、step_ids；同时保存到 last_result。
+            回合失败或中断时不返回部分结果。
+
+        异常:
+            RuntimeError: 满足以下任一情况时显式抛出:
+                - _responding 为 True，当前回合仍在执行;
+                - _storage_failed 为 True，之前的保存故障尚未通过恢复清除;
+                - 执行失败后保存回合结束状态再次遇到 sqlite3.Error;
+                - 捕获的 Exception 经 sanitize_error 处理后文本发生变化，需要
+                  改为抛出不含原敏感内容的错误。
+            ValueError: 满足以下任一情况时显式抛出:
+                - prompt 不是字符串，或文字为空白且没有图片;
+                - 标签与图片数量不符，或有标签不是非空白字符串;
+                - 图片标签重复。
+            捕获的原异常（显式重新抛出）: 执行失败或被中断时，完成本地输入保留
+                处理并尝试保存回合结束状态；未转为上述 RuntimeError 时重抛原异常。
+
+        行为说明:
+            1. 拒绝重复执行，清空上次结果并检查运行状态、输入、标签及图片预算。
+               这些准入检查发生在写入 Turn 之前；图片随后组装为完整用户消息。
+            2. 在存储中创建 Turn 和输入消息，再加入内存上下文并启动记录器。
+               循环负责在实际边界保存步骤、助手消息及工具调用和结果。
+            3. 成功时保存回合完成状态，并汇总事件生成返回值。执行失败时，若
+               本轮尚无完整助手消息，则撤出上下文中的输入，数据库审计记录保留；
+               已有助手消息和工具记录则继续保留，避免遗忘已发生的副作用。
+            4. 循环或回合收尾阶段发现 SQLite 保存故障后标记 _storage_failed，
+               当前会话需显式恢复后才能继续提交；begin_turn 失败则直接向外传播。
+               无论循环如何退出，finally 都会清除正在执行标记。
         """
 
+        if self._responding:
+            raise RuntimeError("当前回合仍在执行，请等待结束后再提交输入")
         self.last_input_retained = False
         self.last_result = None
-        if self._closed:
-            raise RuntimeError("AgentRuntime 已经关闭")
+        self._ensure_idle()
+        if self._storage_failed:
+            raise RuntimeError("会话保存曾失败，请处理存储问题并 /resume 当前会话后继续")
         if not isinstance(prompt, str) or (not prompt.strip() and not images):
             raise ValueError("用户消息不能为空")
         images = tuple(images)
@@ -231,8 +670,12 @@ class AgentRuntime:
                 content.append(image.to_block())
 
         original_length = len(self.messages)
-        self.messages.append({"role": "user", "content": content})
+        user_message = {"role": "user", "content": content}
+        turn = self.session_store.begin_turn(self.session_id, user_message, title_hint=prompt.strip() or "图片对话")
+        self.messages.append(user_message)
         self.last_input_retained = True
+        self._responding = True
+        recorder = TurnRecorder(self.session_store, self.session_id, turn.turn_id, self.model_name)
         events: list[dict[str, Any]] = []
 
         def record(event: dict[str, Any]) -> None:
@@ -249,7 +692,9 @@ class AgentRuntime:
                 max_tool_rounds=self.max_tool_rounds,
                 logger=record,
                 on_event=on_event,
+                recorder=recorder,
             )
+            self.session_store.finish_turn(turn.turn_id, "completed", "final_answer")
         except (Exception, KeyboardInterrupt) as error:
             safe_error = sanitize_error(error, self.messages)
             # 尚未保存完整模型消息时撤回本轮输入。若已有工具执行，则保留其
@@ -257,31 +702,46 @@ class AgentRuntime:
             if len(self.messages) == original_length + 1:
                 del self.messages[original_length:]
                 self.last_input_retained = False
+            end_reason = "user_interrupt" if isinstance(error, KeyboardInterrupt) else "error"
+            if isinstance(error, AgentLoopLimitError):
+                end_reason = "max_tool_rounds"
+            if isinstance(error, sqlite3.Error) or recorder.storage_failed:
+                self._storage_failed = True
+            try:
+                self.session_store.finish_turn(
+                    turn.turn_id,
+                    "cancelled" if isinstance(error, KeyboardInterrupt) else "failed",
+                    end_reason,
+                    retain_input=self.last_input_retained,
+                    error=safe_error,
+                )
+            except sqlite3.Error:
+                self._storage_failed = True
+                raise RuntimeError("会话保存失败，本轮已停止；请处理存储问题并恢复当前会话后继续") from None
             if isinstance(error, Exception) and safe_error != str(error):
                 raise RuntimeError(safe_error) from None
             raise
+        finally:
+            self._responding = False
 
         result = AgentTurnResult(
             content=content,
-            messages=list(messages),
+            messages=deepcopy(messages),
             usage=_aggregate_usage(events),
             finish_reason=_finish_reason(events),
             events=events,
             tool_results=_tool_results(events),
+            session_id=self.session_id,
+            turn_id=turn.turn_id,
+            step_ids=tuple(recorder.step_ids),
         )
         self.last_result = result
         return result
 
     def reset(self, system_prompt: str | None = None) -> None:
-        """清空当前对话，但保留模型、工具和数据库连接。"""
+        """开启新会话；沿用模型、工具和连接，保留旧会话供恢复。"""
 
-        if self._closed:
-            raise RuntimeError("AgentRuntime 已经关闭")
-        if system_prompt is not None:
-            self.system_prompt = system_prompt
-        self.messages = [{"role": "system", "content": self.system_prompt}]
-        self.last_result = None
-        self.last_input_retained = False
+        self.new_session(system_prompt=system_prompt)
 
     def check_image_budget(self, images: Sequence[ImageInput]) -> None:
         """在草稿或用户消息进入历史前检查整个会话的图片预算。"""
@@ -289,23 +749,102 @@ class AgentRuntime:
         validate_image_budget(self.messages, images)
 
     def set_thinking(self, enabled: bool) -> None:
-        """更新支持该参数的模型的思考模式。"""
+        """更新当前会话设置，并应用到支持该参数的模型。"""
+
+        self._ensure_idle()
+        self.session_store.update_thinking(self.session_id, enabled)
+        self._apply_thinking(enabled)
+
+    def _apply_thinking(self, enabled: bool) -> None:
+        """将思考开关应用到运行时及支持它的内存模型。
+
+        作用:
+            供初始化、恢复和设置更新共用；持久化由调用方负责，本函数不写库。
+
+        参数:
+            enabled: 要应用的思考开关；调用方按布尔值传入，本函数不单独校验类型。
+
+        返回:
+            None。更新实例的 thinking_enabled，并按模型类型更新请求附加参数。
+
+        行为说明:
+            1. 保存内存开关，再检查模型是否为名称以 deepseek 开头的 OpenAI 适配器。
+            2. 匹配时将 extra_body 整体设为对应的 thinking 参数；其他模型只更新
+               运行时标记，不代表对应模型协议已启用推理能力。
+        """
 
         self.thinking_enabled = enabled
         if isinstance(self.model, OpenAICompatibleModel) and self.model.model.startswith("deepseek"):
             self.model.extra_body = {"thinking": {"type": "enabled" if enabled else "disabled"}}
 
     def history(self) -> list[dict]:
-        """返回图片已替换成摘要的独立副本，供 CLI 查看。"""
+        """生成当前模型上下文的图片摘要副本。
+
+        作用:
+            为 CLI 查看当前历史提供展示数据，原始上下文继续保留完整图片供模型使用。
+
+        参数:
+            无显式参数；读取实例当前的 messages 列表。
+
+        返回:
+            与当前上下文对应的消息列表副本，图片数据替换为摘要；空上下文返回空列表。
+
+        行为说明:
+            1. 递归生成消息的脱敏副本，不读取数据库、不修改原消息。
+            2. 已退出上下文的审计消息不在此列表中，需要通过 session_details 查看。
+        """
 
         return redact_images(self.messages)
 
     def close(self) -> None:
-        """关闭运行时持有的数据库连接。"""
+        """关闭运行时持有的数据库连接和自有模型客户端。
+
+        作用:
+            在调用方结束使用运行时或退出上下文管理器时释放资源，持久会话仍保留。
+
+        参数:
+            无显式参数；读取关闭、执行和客户端归属标记，使用当前连接及模型。
+
+        返回:
+            None。已成功关闭的实例再次调用时直接返回。
+
+        行为说明:
+            1. 尚未关闭时先检查空闲状态；仅 owns_model_client 为真时关闭模型客户端。
+            2. 无论客户端关闭是否失败，都在 finally 中尝试关闭数据库连接。
+            3. 连接关闭成功后设置 _closed；若连接关闭自身抛出异常，该标记不会更新。
+               外部注入客户端通常由调用方管理，其关闭权由创建时的标记决定。
+        """
 
         if not self._closed:
-            self.connection.close()
-            self._closed = True
+            self._ensure_idle()
+            try:
+                if self._owns_model_client:
+                    self._close_model_client(self.model)
+            finally:
+                self.connection.close()
+                self._closed = True
+
+    @staticmethod
+    def _close_model_client(model: Model) -> None:
+        """调用模型关联客户端提供的关闭方法。
+
+        作用:
+            供运行时关闭、模型替换和工厂失败清理共用，只负责执行资源释放动作。
+
+        参数:
+            model: 待清理的模型对象；由调用方事先确认有权关闭其客户端。
+
+        返回:
+            None。没有 client、没有 close 或 close 不可调用时也直接返回。
+
+        行为说明:
+            1. 读取 model.client.close，存在且可调用时执行，不另行判断资源归属。
+            2. 忽略关闭方法的返回值，不修改运行时的关闭标记。
+        """
+
+        close = getattr(getattr(model, "client", None), "close", None)
+        if callable(close):
+            close()
 
     def __enter__(self) -> AgentRuntime:
         return self
@@ -323,15 +862,75 @@ def create_runtime(
     log_path: str | Path | None = None,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
     thinking_enabled: bool = False,
+    session_id: str | None = None,
+    resume_latest: bool = False,
 ) -> AgentRuntime:
-    """创建一个完整的 AgentRuntime，并负责初始化其依赖。"""
+    """创建并返回已激活会话的完整运行时。
 
-    if model is None:
+    作用:
+        作为 CLI 和测试的组装入口，初始化数据库、会话存储、工具及模型依赖。
+        新建或恢复会话后交由 AgentRuntime 执行，初始化失败时尝试释放已创建资源。
+
+    参数:
+        settings: 当前模型及认证配置；未注入 model 且未给出时加载默认 Settings。
+        client: 可选的外部 SDK 客户端，供工厂创建的模型适配器使用；关闭权保留给
+            调用方。显式传入 model 时，其实际客户端由该模型自行持有。
+        model: 可选的现成模型；省略时由工厂创建。恢复时注入模型的协议与名称
+            必须匹配保存的会话，工厂不会自动替换注入模型。
+        db_path: 数据库路径；省略时使用项目 data/kairos.sqlite3。
+        log_path: 可选的 JSONL 观察日志路径；省略时不设置事件日志器。
+        system_prompt: 新会话的系统提示词；恢复时采用保存的提示词。
+        thinking_enabled: 新会话的思考开关；恢复时采用保存的开关。
+        session_id: 要恢复的完整会话 ID 或唯一前缀，与 resume_latest 互斥。
+        resume_latest: 是否恢复最近活动的可见会话；没有历史时抛出异常。
+
+    返回:
+        已激活新会话或指定历史的 AgentRuntime；调用方使用结束后应调用 close。
+
+    异常:
+        ValueError: 满足以下任一情况时显式抛出:
+            - session_id 与 resume_latest 同时指定;
+            - 由工厂管理模型时，目标会话协议不是 openai 或 anthropic;
+            - 显式注入的模型与目标会话保存的协议或模型名称不匹配。
+        捕获的原异常（显式重新抛出）: 打开数据库后的初始化失败或被中断时，
+            依次尝试关闭工厂自有客户端和连接，再重新抛出原异常。
+
+    行为说明:
+        1. 检查恢复选项，准备配置并打开数据库，再创建存储及查找目标会话。
+        2. 恢复时使用会话保存的协议、模型和思考设置；认证仍来自当前配置。
+           注入模型则只检查兼容性，不按历史重建。
+        3. 组装模型、日志和工具后构造运行时。只有工厂自建且未注入 client 的
+           模型客户端才由运行时拥有关闭权；数据库连接始终交由运行时关闭。
+        4. 打开连接后初始化失败时，依次尝试关闭自建客户端和连接，再传播异常。
+           清理不回滚此前已经提交的初始化或会话写入；客户端关闭若抛出异常，
+           当前实现也会中断后续连接清理。
+    """
+
+    if session_id is not None and resume_latest:
+        raise ValueError("指定会话与继续最近会话不能同时使用")
+    managed_model = model is None
+    if managed_model:
         settings = settings or Settings()
     database_path = db_path or PROJECT_ROOT / "data" / "kairos.sqlite3"
     connection = initialize_database(database_path)
+    runtime_model = None
     try:
-        runtime_model = model or build_model(settings, client=client, thinking_enabled=thinking_enabled)
+        store = SessionStore(connection)
+        info = store.get_session(session_id) if session_id is not None else None
+        if resume_latest:
+            info = store.latest_session()
+        runtime_settings = settings
+        if info is not None:
+            thinking_enabled = info.thinking_enabled
+            if managed_model:
+                if info.provider not in {"openai", "anthropic"}:
+                    raise ValueError("该会话使用自定义模型，请显式传入匹配的模型后恢复")
+                runtime_settings = settings.model_copy(
+                    update={"kairos_provider": info.provider, "kairos_model": info.model}
+                )
+            elif (info.provider, info.model) != (_model_provider(model), str(getattr(model, "model", "unknown"))):
+                raise ValueError("恢复会话需要相同协议和模型；请传入与该会话匹配的模型")
+        runtime_model = model or build_model(runtime_settings, client=client, thinking_enabled=thinking_enabled)
         logger = JsonlLogger(log_path) if log_path else None
         return AgentRuntime(
             model=runtime_model,
@@ -340,7 +939,15 @@ def create_runtime(
             system_prompt=system_prompt,
             logger=logger,
             thinking_enabled=thinking_enabled,
+            session_store=store,
+            session_info=info,
+            model_settings=settings,
+            model_client=client,
+            rebuild_model=managed_model,
+            owns_model_client=managed_model and client is None,
         )
-    except Exception:
+    except (Exception, KeyboardInterrupt):
+        if runtime_model is not None and managed_model and client is None:
+            AgentRuntime._close_model_client(runtime_model)
         connection.close()
         raise

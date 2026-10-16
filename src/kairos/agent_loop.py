@@ -29,6 +29,29 @@ ToolHandler = Callable[..., object]
 EventLogger = Callable[[dict[str, Any]], None]
 
 
+class ExecutionRecorder(Protocol):
+    """循环的持久化边界；内部身份不混入发给模型的消息。
+
+    循环按执行顺序调用这些方法，由实现负责 ID 分配、消息配对和状态写入。
+    ids 供观察事件关联当前会话、回合与步骤，消息写入方法返回内部消息 ID。
+    """
+
+    @property
+    def ids(self) -> dict[str, str]: ...
+
+    def start_step(self, index: int) -> None: ...
+
+    def record_response(self, response: dict, duration_ms: float) -> None: ...
+
+    def append_assistant(self, message: dict) -> str: ...
+
+    def start_tool(self, tool_call_id: str) -> None: ...
+
+    def append_tool_result(self, message: dict, *, status: str | None = None) -> str: ...
+
+    def finish_step(self, status: str, *, error: str | None = None) -> None: ...
+
+
 class AgentLoopLimitError(RuntimeError):
     """模型连续请求工具，超过了允许的工具响应轮数。"""
 
@@ -107,15 +130,45 @@ def run_agent_turn(
     max_tool_rounds: int = 8,
     logger: EventLogger | None = None,
     on_event: EventLogger | None = None,
+    recorder: ExecutionRecorder | None = None,
 ) -> tuple[str, list[dict]]:
-    """执行可包含多轮、多工具调用的 Agent 回合。
+    """执行一次包含模型生成和工具调用的 Agent 回合。
 
-    模型直接回答时函数返回；模型请求工具时，函数执行这一批工具，把 assistant
-    工具调用和 tool 结果写回 messages，再次请求模型，直到模型给出最终回答。
-    ``max_tool_rounds`` 只统计包含工具调用的模型响应轮数，同一轮的多个工具
-    调用只计一次；超过上限后抛出 AgentLoopLimitError，避免无限循环。
-    传入 on_event 时使用模型流式接口；不支持流式的模型仍可返回完整响应。
-    text_delta 仅交给展示回调，日志仍以完整模型响应和工具结果为单位。
+    作用:
+        接收 Runtime 准备的消息上下文，反复请求模型、执行工具并追加结果，
+        直到模型给出没有工具调用的回答；通过可选记录器保存步骤和完整消息。
+
+    参数:
+        messages: 当前模型消息列表；函数会原地追加助手消息和工具结果。
+        model: 提供 complete() 的模型；传入 on_event 且支持 stream() 时使用流式接口。
+        tool_handlers: 工具名称到执行函数的映射。
+        tool_schemas: 发给模型的工具定义列表。
+        max_tool_rounds: 大于等于 1；限制包含工具调用的模型响应轮数，一批多个工具只计一轮。
+        logger: 可选日志回调，接收图片已脱敏的完整请求、响应、错误和工具结果事件。
+        on_event: 可选展示回调，额外实时接收 text_delta；正文片段不写入 logger。
+        recorder: 可选执行记录器，负责 ID 关联和持久化；省略时仅维护内存历史。
+
+    返回:
+        最终回答正文与更新后的消息列表（tuple[str, list[dict]]）。
+        返回的列表就是传入的 messages，内部关联 ID 不混入其模型消息内容。
+
+    异常:
+        ValueError: 满足以下任一情况时显式抛出:
+            - max_tool_rounds 小于 1;
+            - 一批工具调用中有缺失、空字符串、非字符串或重复的调用 ID。
+        AgentLoopLimitError: 已达到工具响应轮数上限，模型仍要求执行下一批工具。
+        Exception / KeyboardInterrupt（显式重新抛出）: 对应本函数的三处裸 raise:
+            - 模型生成或正文回调失败，发送 model_error 事件后重新抛出;
+            - 工具批次处理失败，尝试补齐未配对结果，收尾成功后重新抛出;
+            - 步骤执行失败，尝试记录步骤结束状态，收尾成功后重新抛出。
+
+    行为说明:
+        1. 每次迭代开始步骤、发送当前上下文；流式片段即时展示，完整模型响应随后处理。
+        2. 对工具响应先验证调用 ID，再保存完整助手消息和调用记录；保存成功后串行执行工具。
+           每个结果通过原 tool_call_id 配对并追加到历史，再进入下一次模型生成。
+        3. 无工具调用时保存最终回答并结束；工具批次中断时区分未执行和结果未知，
+           尝试补齐结果并记录步骤状态，已经发生的工具副作用不会由此撤销。
+           持久化补写失败时传播保存异常，遗留记录交由显式恢复处理。
     """
     if max_tool_rounds < 1:
         raise ValueError("max_tool_rounds 必须大于或等于 1")
@@ -124,6 +177,24 @@ def run_agent_turn(
     request_number = 0
 
     def emit(event: dict[str, Any]) -> None:
+        """为观察事件添加执行 ID 并清理图片载荷。
+
+        作用:
+            将循环事件依次发送给日志和展示回调，避免观察数据包含图片 Base64。
+
+        参数:
+            event: 待发送的事件字典，例如 {"event": "model_request", "request_number": 1}。
+
+        返回:
+            无返回值（None）；未配置回调时不发送事件。
+
+        行为说明:
+            1. 配置了 recorder 时加入当前会话、回合及步骤 ID，再生成图片脱敏副本。
+            2. 先调用 logger，再调用 on_event；本函数不另行保存模型历史。
+        """
+
+        if recorder:
+            event = {**event, **recorder.ids}
         event = redact_images(event)
         if logger:
             logger(event)
@@ -131,104 +202,161 @@ def run_agent_turn(
             on_event(event)
 
     def text_delta(text: str) -> None:
+        """将正文片段及其执行位置交给展示回调。
+
+        作用:
+            在模型流读取期间显示增量正文；完整消息由外层循环在响应结束后保存。
+
+        参数:
+            text: 本次收到的正文片段；空字符串不产生事件。
+
+        返回:
+            无返回值（None）；没有 on_event 时直接结束。
+
+        行为说明:
+            1. 仅在正文非空且存在展示回调时构造 text_delta 事件。
+            2. 加入请求序号和可用的执行 ID，脱敏后交给 on_event，不逐片写入持久历史。
+        """
+
         if text and on_event:
-            on_event(redact_images({"event": "text_delta", "request_number": request_number, "text": text}))
+            on_event(
+                redact_images(
+                    {
+                        "event": "text_delta",
+                        "request_number": request_number,
+                        "text": text,
+                        **(recorder.ids if recorder else {}),
+                    }
+                )
+            )
 
     while True:
         request_number += 1
-        emit(
-            {
-                "event": "model_request",
-                "request_number": request_number,
-                "tool_round": tool_rounds,
-                "messages": list(messages),
-                "tools": list(tool_schemas),
-            }
-        )
-
-        model_started = perf_counter()
+        if recorder:
+            recorder.start_step(request_number)
         try:
-            if on_event is not None and isinstance(model, StreamingModel):
-                response = model.stream(messages=messages, tools=tool_schemas, on_text=text_delta)
-            else:
-                response = model.complete(messages=messages, tools=tool_schemas)
-                text_delta(response.get("content") or "")
-        except (Exception, KeyboardInterrupt) as error:
             emit(
                 {
-                    "event": "model_error",
+                    "event": "model_request",
                     "request_number": request_number,
                     "tool_round": tool_rounds,
-                    "error": {"type": type(error).__name__, "message": sanitize_error(error, messages)},
-                    "duration_ms": round((perf_counter() - model_started) * 1000, 3),
+                    "messages": list(messages),
+                    "tools": list(tool_schemas),
                 }
             )
 
-            raise
-        emit(
-            {
-                "event": "model_response",
-                "request_number": request_number,
-                "tool_round": tool_rounds,
-                "response": response,
-                "usage": response.get("usage"),
-                "duration_ms": round((perf_counter() - model_started) * 1000, 3),
-            }
-        )
-        tool_calls = response.get("tool_calls") or []
-        if not tool_calls:
-            final_content = response.get("content") or ""
-            messages.append(_assistant_message({**response, "content": final_content}, []))
-            return final_content, messages
-
-        if tool_rounds >= max_tool_rounds:
-            raise AgentLoopLimitError(f"工具调用超过最大轮数（{max_tool_rounds}）")
-        tool_rounds += 1
-
-        # 先检查整批调用的关联编号，避免执行到一半才发现无法配对的调用。
-        call_ids = [call.get("id") for call in tool_calls]
-        if any(not call_id for call_id in call_ids) or len(set(call_ids)) != len(call_ids):
-            raise ValueError("工具调用缺少或重复 id，无法回传结果")
-        batch_start = len(messages)
-        active_call: str | None = None
-        try:
-            messages.append(_assistant_message(response, tool_calls))
-            for tool_call in tool_calls:
-                function = tool_call.get("function", {})
-                result_started = perf_counter()
-                active_call = tool_call["id"]
-                result_content = _execute_tool(tool_call, tool_handlers)
-                messages.append({"role": "tool", "tool_call_id": tool_call["id"], "content": result_content})
-                active_call = None
+            model_started = perf_counter()
+            try:
+                if on_event is not None and isinstance(model, StreamingModel):
+                    response = model.stream(messages=messages, tools=tool_schemas, on_text=text_delta)
+                else:
+                    response = model.complete(messages=messages, tools=tool_schemas)
+                    text_delta(response.get("content") or "")
+            except (Exception, KeyboardInterrupt) as error:
                 emit(
                     {
-                        "event": "tool_result",
+                        "event": "model_error",
                         "request_number": request_number,
                         "tool_round": tool_rounds,
-                        "tool_call_id": tool_call["id"],
-                        "tool_name": function.get("name"),
-                        "arguments": function.get("arguments"),
-                        "result": result_content,
-                        "duration_ms": round((perf_counter() - result_started) * 1000, 3),
+                        "error": {"type": type(error).__name__, "message": sanitize_error(error, messages)},
+                        "duration_ms": round((perf_counter() - model_started) * 1000, 3),
                     }
                 )
-        except (Exception, KeyboardInterrupt):
-            # 执行、记录或展示任一步中断时，保留已记录的结果并补齐未完成调用。
-            # 不能删除历史来“撤销”已经发生的副作用，也不能留下未配对的工具消息。
-            completed = {m["tool_call_id"] for m in messages[batch_start + 1 :] if m["role"] == "tool"}
-            for pending in tool_calls if len(messages) > batch_start else []:
-                if pending["id"] in completed:
-                    continue
-                message = (
-                    "工具执行被中断，结果未确认；可能已产生副作用，请先查询状态，不要直接重试。"
-                    if pending["id"] == active_call
-                    else "本次工具调用因回合中断而未执行。"
-                )
-                messages.append(
-                    {
+                raise
+            duration_ms = round((perf_counter() - model_started) * 1000, 3)
+            if recorder:
+                recorder.record_response(response, duration_ms)
+            emit(
+                {
+                    "event": "model_response",
+                    "request_number": request_number,
+                    "tool_round": tool_rounds,
+                    "response": response,
+                    "usage": response.get("usage"),
+                    "duration_ms": duration_ms,
+                }
+            )
+            tool_calls = response.get("tool_calls") or []
+            if not tool_calls:
+                final_content = response.get("content") or ""
+                assistant = _assistant_message({**response, "content": final_content}, [])
+                if recorder:
+                    recorder.append_assistant(assistant)
+                messages.append(assistant)
+                if recorder:
+                    recorder.finish_step("completed")
+                return final_content, messages
+
+            if tool_rounds >= max_tool_rounds:
+                raise AgentLoopLimitError(f"工具调用超过最大轮数（{max_tool_rounds}）")
+            tool_rounds += 1
+
+            # 整批调用先验证、再保存；保存成功后才允许执行任何有副作用的工具。
+            call_ids = [call.get("id") for call in tool_calls]
+            if any(not isinstance(call_id, str) or not call_id for call_id in call_ids) or len(set(call_ids)) != len(
+                call_ids
+            ):
+                raise ValueError("工具调用缺少或重复 id，无法回传结果")
+            batch_start = len(messages)
+            active_call: str | None = None
+            try:
+                assistant = _assistant_message(response, tool_calls)
+                if recorder:
+                    recorder.append_assistant(assistant)
+                messages.append(assistant)
+                for tool_call in tool_calls:
+                    function = tool_call.get("function", {})
+                    result_started = perf_counter()
+                    if recorder:
+                        recorder.start_tool(tool_call["id"])
+                    active_call = tool_call["id"]
+                    result_content = _execute_tool(tool_call, tool_handlers)
+                    result_message = {"role": "tool", "tool_call_id": tool_call["id"], "content": result_content}
+                    messages.append(result_message)
+                    message_id = recorder.append_tool_result(result_message) if recorder else None
+                    active_call = None
+                    emit(
+                        {
+                            "event": "tool_result",
+                            "request_number": request_number,
+                            "tool_round": tool_rounds,
+                            "tool_call_id": tool_call["id"],
+                            "tool_name": function.get("name"),
+                            "arguments": function.get("arguments"),
+                            "result": result_content,
+                            "duration_ms": round((perf_counter() - result_started) * 1000, 3),
+                            **({"message_id": message_id} if message_id else {}),
+                        }
+                    )
+            except (Exception, KeyboardInterrupt):
+                # 执行、保存或展示中断时，补齐已保存的整批调用；恢复只能加载结果，不能重跑工具。
+                completed = {m["tool_call_id"] for m in messages[batch_start + 1 :] if m["role"] == "tool"}
+                for pending in tool_calls if len(messages) > batch_start else []:
+                    if pending["id"] in completed:
+                        continue
+                    interrupted = pending["id"] == active_call
+                    detail = (
+                        "工具执行被中断，结果未确认；可能已产生副作用，请先查询状态，不要直接重试。"
+                        if interrupted
+                        else "本次工具调用因回合中断而未执行。"
+                    )
+                    result_message = {
                         "role": "tool",
                         "tool_call_id": pending["id"],
-                        "content": _error_content(InterruptedError(message)),
+                        "content": _error_content(InterruptedError(detail)),
                     }
+                    messages.append(result_message)
+                    if recorder:
+                        recorder.append_tool_result(
+                            result_message, status="interrupted" if interrupted else "not_executed"
+                        )
+                raise
+            if recorder:
+                recorder.finish_step("completed")
+        except (Exception, KeyboardInterrupt) as error:
+            if recorder:
+                recorder.finish_step(
+                    "cancelled" if isinstance(error, KeyboardInterrupt) else "failed",
+                    error=sanitize_error(error, messages),
                 )
             raise

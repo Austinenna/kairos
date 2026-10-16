@@ -15,16 +15,28 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 - `src/kairos/observability.py` 提供本地 JSONL 日志；通过 `create_runtime(log_path=...)` 显式启用，默认不写日志。
 - 图片第一版已接入：macOS Ctrl+V／拖入完整图片路径 → prompt_toolkit 附件草稿 → Enter 提交图文；`images.py` 校验、方向校正、按需缩放压缩并固定内存快照。两种协议共用运行时和现有工具循环，历史/事件/日志只展示图片摘要。使用方式、限额和终端兼容边界见 README“图片输入”。
 - 待办工具已增加 `delete_todo(todo_id)`：按 ID 永久删除未完成或已完成的记录，返回被删除的完整记录；找不到 ID 时通过现有工具错误流程回传。模型提示词要求仅在用户明确要求删除时调用，未提供 ID 时先查询定位，目标不明确时询问。
+- 会话第一版已实现：`sessions.py` 在现有 SQLite 中管理 Session、Turn、Step、Message、ToolCall 五类记录，`execution.py` 负责执行边界持久化。CLI 支持新建、列表、恢复、重命名及 `/history --ids` 查看关联；文字、图片快照和协议历史字段可以保存并恢复。状态与完整 ID 关系见 [会话系统设计](docs/会话系统设计.md)。
 
 ## 正常运行流程
 
 1. 安装 Python 3.13、`uv`。
 2. 复制 `.env.example` 为 `.env`，设置 `KAIROS_PROVIDER`、`KAIROS_MODEL`、通用的 `KAIROS_API_KEY` 和 `GATEWAY_BASE_URL`；`KAIROS_MODEL` 与 `GATEWAY_BASE_URL` 没有代码默认值，选择 `anthropic` 时，在需要时再设置不含 `/v1` 的 `ANTHROPIC_BASE_URL`。
-3. 在项目根目录运行 `uv run kairos`，输入 `/help` 查看命令。主程序由 `cli.py` 提供 CLI，由 `terminal_renderer.py` 负责 Rich 展示，由 `AgentRuntime` 管理会话、模型、工具和 SQLite。
+3. 在项目根目录运行 `uv run kairos` 新建会话，`uv run kairos --continue` 恢复最近会话，或 `uv run kairos --session ID` 恢复指定会话；后两个参数互斥。进入后使用 `/sessions`、`/resume ID` 切换，`/new [标题]` 新建，`/rename 标题` 改名。`/reset` 和 `/system 文本` 保留旧会话并开启新会话。
 4. 运行 `uv run pytest -q` 和 `uv run ruff check .` 做基础检查；流式离线测试不消耗 API 额度。
 5. 使用 VS Code 的 `Kairos CLI` 配置进入主程序，在 `cli.py`、`terminal_renderer.py`、`runtime.py`、`agent_loop.py` 和 `todos.py` 的边界设置断点。
 
-真实密钥和个人数据不入库；流式改造最初使用模拟数据验收。图片接入阶段追加的真实网关测试仅发送合成图片，并使用临时待办数据库。
+真实密钥及本地会话、待办数据库不提交 Git。会话正文和已发送图片会持久保存到本地 `data/kairos.sqlite3`，密钥和 endpoint 仍从当前配置读取。流式改造最初使用模拟数据验收；图片接入阶段追加的真实网关测试仅发送合成图片，并使用临时待办数据库。
+
+## 会话实现与接手边界
+
+- `SessionStore` 管理 `sessions`、`session_turns`、`session_steps`、`session_messages`、`session_tool_calls`；新增会话表复用原数据库，不改待办表。
+- Runtime 提供 `new_session()`、`list_sessions()`、`resume_session()`、`rename_session()`、`session_details()`。`session_id` 和 `session_info` 标识当前会话；`respond()` 的返回值增加 `session_id`、`turn_id`、`step_ids`，工具结果用 `(ToolResult.step_id, ToolResult.call_id)` 定位调用。
+- 四类内部 ID 使用 UUID，`tool_call_id` 沿用模型接口返回值，数据库使用 `(step_id, tool_call_id)` 配对。消息表完整保存 `payload`；传给 provider 的内存消息不混入这些内部 ID 和顺序字段。
+- 新空会话已经写入数据库，未命名且未发消息时不显示在列表。恢复沿用保存的 system、provider、model 和思考设置，当前配置提供认证与服务地址。
+- 尚无完整助手消息便失败的输入以 `in_context=false` 留作审计，不进入后续请求；已经保存的完整助手消息和工具结果继续进入上下文。`history()` 返回当前上下文的图片摘要副本，`session_details()` 额外包含全部对象、ID 和审计记录。
+- 显式恢复会修补未完成回合及缺失的工具结果说明，区分未执行与结果未知，不自动重跑工具。CLI 会提示先检查历史；工具副作用并不随消息状态回滚。
+- 数据库工具在独立事务边界执行，SQL 错误先回滚再作为工具结果回传。会话保存失败后停止本轮，处理存储问题并显式恢复会话后才能继续提交输入。
+- 当前仅支持单进程串行运行，没有跨进程并发写入保护；会话第一版的真实网关体验仍待验收。
 
 ## 关键决定
 
@@ -34,6 +46,8 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 - 注释和用户可见文字使用中文，实验过程和结论写入 `docs/learning-log.md`。
 
 ## 已验证与未验证
+
+已验证：2026-10-16 会话第一版完成后，222 项离线测试通过，Ruff 检查、格式检查和差异检查通过；真实 `xterm-256color` PTY 完成两个会话的创建、命名、切换和退出后继续，恢复后用户消息计数从 1 增加到 2，`/history --ids` 展示原有及新增 ID。全部会话验证使用临时数据库与离线模型，没有操作实际个人数据或请求真实网关。
 
 已验证：2026-10-12 图片接入后，177 项离线测试通过，Ruff 检查、格式检查和差异检查通过；真实 `xterm-256color` PTY 完成 Ctrl+V、图片路径粘贴、两轮图文提交及退出，功能受限终端回退文字模式。完整实验记录见 `docs/learning-log.md` 的实验 11。
 
@@ -49,11 +63,12 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 
 ## 下一步
 
-下一步完成阶段 1 的 s1-10 双模型对比，并体验实际终端的图片粘贴和拖放；阶段 2 的工具设计与安全策略在此之后开始。每完成一个独立阶段，更新 README、学习记录和本交接文件。
+下一步体验真实模型下的会话保存、退出恢复、图文追问和切换，并继续阶段 1 的 s1-10 双模型对比及实际终端图片粘贴和拖放验收；阶段 2 的工具设计与安全策略在此之后开始。每完成一个独立阶段，更新 README、学习记录和本交接文件。
 
 ## 文档入口
 
 - [README.md](README.md)：项目目标、快速开始和阶段进度。
 - [CLAUDE.md](CLAUDE.md)：协作方式、项目约定和已知坑。
 - [docs/learning-log.md](docs/learning-log.md)：阶段实验记录。
+- [docs/会话系统设计.md](docs/会话系统设计.md)：五类 ID、关联字段、存储与 Runtime 接口。
 - [docs/个人 Agent 助手 14 周计划.html](docs/个人%20Agent%20助手%2014%20周计划.html)：学习计划原文。

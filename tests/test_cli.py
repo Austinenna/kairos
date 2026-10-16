@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from kairos.cli import run
 from kairos.runtime import AgentTurnResult, create_runtime
 from kairos.terminal_input import TerminalInputUnsupportedError
@@ -22,11 +24,15 @@ class FakeConsole:
 class FakeRuntime:
     model_name = "fake-model"
     system_prompt = "系统提示"
+    session_id = "fake-session"
+    recovered_turns = 0
 
     def __init__(self):
         self.prompts = []
         self.resets = []
         self.thinking = []
+        self.thinking_enabled = False
+        self.session_info = SimpleNamespace(session_id=self.session_id, title="测试会话")
 
     def respond(self, prompt, *, on_event=None):
         self.prompts.append(prompt)
@@ -51,6 +57,7 @@ class FakeRuntime:
 
     def set_thinking(self, enabled):
         self.thinking.append(enabled)
+        self.thinking_enabled = enabled
 
 
 def test_main_chat_uses_injected_agent_runtime_and_keeps_commands():

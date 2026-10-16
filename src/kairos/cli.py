@@ -4,6 +4,7 @@ CLI 负责读取输入、处理斜杠命令和展示结果；模型、工具、�
 Agent 循环由 ``kairos.runtime.AgentRuntime`` 统一管理。
 """
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -22,11 +23,16 @@ __all__ = ["run"]
 
 HELP = """\
 [bold]命令[/]
+  /new 标题        新建并切换会话，标题可省略，保留旧会话
+  /sessions       列出已保存的会话
+  /resume ID      恢复会话（支持唯一 ID 前缀）
+  /rename 标题     修改当前会话标题
   /history        查看会话历史（图片显示摘要）
-  /system 文本     替换 system 提示词（会清空对话，方便做对比实验）
+  /history --ids  查看会话、回合、步骤、消息和工具调用的 ID 关联
+  /system 文本     使用新 system 提示词开启会话，保留旧会话
   /think          开关思考模式
   /file 路径       把一个文本文件的内容作为你的消息发出去
-  /reset          清空对话，保留 system 提示词
+  /reset          新建会话，保留 system 提示词和旧会话
   /exit           退出（也可以按 Ctrl+D）
 图片：Ctrl+V 粘贴图片，或拖入图片文件；编辑问题后 Enter 一起发送。
 在图片标签右侧按 Backspace 可以移除附件。
@@ -39,38 +45,83 @@ def run(
     settings: Settings | None = None,
     runtime: AgentRuntime | None = None,
     input_editor: TerminalInput | None = None,
+    session_id: str | None = None,
+    resume_latest: bool = False,
 ) -> None:
-    """启动交互式 CLI；可注入运行时以便离线测试和复用。"""
+    """启动终端交互并连接会话命令与 Agent 运行时。
+
+    作用:
+        创建或选择启动会话，读取用户输入，通过 Runtime 执行模型和会话操作，
+        再展示流式回答与错误；新建或切换成功时清理附件草稿。
+
+    参数:
+        console: 可选输出终端；省略时创建 Rich Console。
+        settings: 创建 Runtime 时使用的配置；已有注入运行时时无需创建模型配置。
+        runtime: 可选的已有运行时，便于复用和离线测试；其关闭权留给调用方。
+        input_editor: 可选输入编辑器，read() 返回 InputDraft；退出时由本函数关闭。
+        session_id: 启动时恢复的完整会话 ID 或唯一前缀，和 resume_latest 互斥。
+        resume_latest: 为真时继续最近会话；没有可恢复会话时显示错误并退出。
+
+    返回:
+        无返回值（None）。正常退出、输入结束或已处理的启动错误均结束函数。
+
+    异常:
+        ValueError: 本函数在以下位置显式抛出，随后由内部错误分支捕获并展示:
+            - session_id 与 resume_latest 同时指定;
+            - 已注入 Runtime，要求继续最近会话，但会话列表为空;
+            - /history 带有非空且不是 --ids 的参数;
+            - /resume 未提供会话 ID;
+            - /rename 未提供标题。
+
+    行为说明:
+        1. 校验启动参数，创建或恢复 Runtime，准备输入编辑器并显示当前会话。
+        2. 将本地命令交给会话接口，将普通输入交给 respond()；根据保留状态恢复失败草稿。
+        3. 退出时始终关闭输入编辑器，仅关闭本函数创建的 Runtime，保留外部注入实例。
+    """
 
     console = console or Console()
     renderer = TerminalRenderer(console)
     owns_runtime = runtime is None
-    if runtime is None:
-        try:
-            settings = settings or Settings()
-        except ValidationError:
-            renderer.error("[red]配置无效。[/]把 .env.example 复制成 .env，并检查模型配置后再运行。")
-            return
-
-        if not settings.kairos_api_key:
-            renderer.error("[red]没有找到 KAIROS_API_KEY。[/]把 .env.example 复制成 .env，填入网关项目 Key 再运行。")
-            return
-        runtime = create_runtime(settings=settings)
-
-    assert runtime is not None
-    model = runtime.model_name
-    think = False
     total_cost = 0.0
-    if input_editor is None and sys.stdin.isatty() and getattr(console, "is_terminal", False):
-        try:
-            input_editor = TerminalInput(budget_check=runtime.check_image_budget)
-        except TerminalInputUnsupportedError:
-            renderer.status("[dim]当前终端使用文字输入模式；图片粘贴和拖入需要支持交互的终端。[/]")
     restore_draft: InputDraft | None = None
-
-    renderer.status(f"[bold]Kairos[/] · 模型 {model} · 输入 /help 查看命令")
-
     try:
+        try:
+            if session_id is not None and resume_latest:
+                raise ValueError("--session 和 --continue 不能同时使用")
+            if runtime is None:
+                try:
+                    settings = settings or Settings()
+                except ValidationError:
+                    renderer.error("[red]配置无效。[/]把 .env.example 复制成 .env，并检查模型配置后再运行。")
+                    return
+
+                if not settings.kairos_api_key:
+                    renderer.error(
+                        "[red]没有找到 KAIROS_API_KEY。[/]把 .env.example 复制成 .env，填入网关项目 Key 再运行。"
+                    )
+                    return
+                runtime = create_runtime(settings=settings, session_id=session_id, resume_latest=resume_latest)
+            elif session_id is not None:
+                runtime.resume_session(session_id)
+            elif resume_latest:
+                sessions = runtime.list_sessions()
+                if not sessions:
+                    raise ValueError("没有可以恢复的会话，请直接运行 kairos 新建会话")
+                runtime.resume_session(sessions[0].session_id)
+        except (ValueError, OSError, RuntimeError, sqlite3.Error) as error:
+            renderer.error(f"[red]无法启动会话：{escape(str(redact_images(str(error))))}[/]")
+            return
+
+        assert runtime is not None
+        if input_editor is None and sys.stdin.isatty() and getattr(console, "is_terminal", False):
+            try:
+                input_editor = TerminalInput(budget_check=runtime.check_image_budget)
+            except TerminalInputUnsupportedError:
+                renderer.status("[dim]当前终端使用文字输入模式；图片粘贴和拖入需要支持交互的终端。[/]")
+
+        renderer.status(f"[bold]Kairos[/] · {_session_label(runtime)} · 输入 /help 查看命令")
+        _show_recovery_notice(runtime, renderer)
+
         while True:
             try:
                 if input_editor is not None:
@@ -88,41 +139,60 @@ def run(
             # ---- 命令 ----
             if user_input.startswith("/"):
                 cmd, _, arg = user_input.partition(" ")
-                if cmd == "/exit":
-                    break
-                elif cmd == "/help":
-                    renderer.status(HELP)
-                elif cmd == "/history":
-                    renderer.history(runtime.history())
-                elif cmd == "/reset":
-                    runtime.reset()
-                    if input_editor is not None:
-                        input_editor.clear()
-                    renderer.status("[dim]对话已清空。[/]")
-                elif cmd == "/system":
-                    if not arg:
-                        renderer.status(f"[dim]当前 system 提示词：{runtime.system_prompt}[/]")
-                        continue
-                    runtime.reset(system_prompt=arg)
-                    if input_editor is not None:
-                        input_editor.clear()
-                    renderer.status("[dim]system 提示词已替换，对话已清空。[/]")
-                elif cmd == "/think":
-                    think = not think
-                    runtime.set_thinking(think)
-                    renderer.status(f"[dim]思考模式：{'开' if think else '关'}[/]")
-                elif cmd == "/file":
-                    path = Path(arg).expanduser()
-                    try:
-                        user_input = path.read_text(encoding="utf-8")
-                    except (OSError, UnicodeError) as e:
-                        renderer.error(f"[red]读不了这个文本文件：{escape(str(e))}[/]")
+                arg = arg.strip()
+                try:
+                    if cmd == "/exit":
+                        break
+                    elif cmd == "/help":
+                        renderer.status(HELP)
+                    elif cmd == "/history":
+                        if arg == "--ids":
+                            console.print_json(data=runtime.session_details())
+                        elif not arg:
+                            renderer.history(runtime.history())
+                        else:
+                            raise ValueError("用法：/history 或 /history --ids")
+                    elif cmd == "/sessions":
+                        _show_sessions(runtime, renderer)
+                    elif cmd in {"/new", "/reset", "/resume"} or (cmd == "/system" and arg):
+                        if cmd == "/new":
+                            runtime.new_session(title=arg or None)
+                        elif cmd == "/resume":
+                            if not arg:
+                                raise ValueError("用法：/resume ID")
+                            runtime.resume_session(arg)
+                        else:
+                            runtime.reset(system_prompt=arg if cmd == "/system" else None)
+                        restore_draft = None
                         if input_editor is not None:
-                            restore_draft = draft
-                        continue
-                    renderer.status(f"[dim]已读取 {escape(path.name)}，{len(user_input):,} 个字符。[/]")
-                else:
-                    renderer.error(f"[red]不认识的命令 {escape(cmd)}[/]，输入 /help 查看。")
+                            input_editor.clear()
+                        renderer.status(f"[dim]已切换 · {_session_label(runtime)}[/]")
+                        _show_recovery_notice(runtime, renderer)
+                    elif cmd == "/rename":
+                        if not arg:
+                            raise ValueError("用法：/rename 标题")
+                        runtime.rename_session(arg)
+                        renderer.status(f"[dim]已重命名 · {_session_label(runtime)}[/]")
+                    elif cmd == "/system":
+                        renderer.status(f"[dim]当前 system 提示词：{escape(runtime.system_prompt)}[/]")
+                    elif cmd == "/think":
+                        runtime.set_thinking(not runtime.thinking_enabled)
+                        renderer.status(f"[dim]思考模式：{'开' if runtime.thinking_enabled else '关'}[/]")
+                    elif cmd == "/file":
+                        path = Path(arg).expanduser()
+                        try:
+                            user_input = path.read_text(encoding="utf-8")
+                        except (OSError, UnicodeError) as e:
+                            renderer.error(f"[red]读不了这个文本文件：{escape(str(e))}[/]")
+                            if input_editor is not None:
+                                restore_draft = draft
+                            continue
+                        renderer.status(f"[dim]已读取 {escape(path.name)}，{len(user_input):,} 个字符。[/]")
+                    else:
+                        renderer.error(f"[red]不认识的命令 {escape(cmd)}[/]，输入 /help 查看。")
+                except (ValueError, OSError, RuntimeError, sqlite3.Error) as error:
+                    renderer.error(f"[red]命令执行失败：{escape(str(redact_images(str(error))))}[/]")
+                    continue
                 if cmd != "/file":
                     continue
 
@@ -154,7 +224,9 @@ def run(
                 message = escape(str(redact_images(str(e))))
                 renderer.error(f"\n[red]本轮执行失败：{type(e).__name__}: {message}[/]")
             else:
-                total_cost += renderer.render_turn(result, model=model, total_cost=total_cost, content_streamed=True)
+                total_cost += renderer.render_turn(
+                    result, model=runtime.model_name, total_cost=total_cost, content_streamed=True
+                )
                 continue
 
             if input_editor is not None:
@@ -166,5 +238,89 @@ def run(
     finally:
         if input_editor is not None:
             input_editor.close()
-        if owns_runtime:
+        if owns_runtime and runtime is not None:
             runtime.close()
+
+
+def _session_label(runtime: AgentRuntime) -> str:
+    """生成当前会话的终端摘要文字。
+
+    作用:
+        为启动、切换和重命名提示提供即时信息，避免显示旧会话的模型或思考状态。
+
+    参数:
+        runtime: 已激活且未关闭的运行时，提供最新 session_info 和模型状态。
+
+    返回:
+        包含短会话 ID、标题、模型与思考开关的字符串（str），动态文本已转义 Rich 标记。
+
+    行为说明:
+        1. 从 Runtime 读取当前会话概要和模型状态。
+        2. 将会话 ID 截为前 8 位并转义动态文本，返回用于展示的摘要，不修改会话。
+    """
+
+    info = runtime.session_info
+    return (
+        f"会话 {escape(info.session_id[:8])} · {escape(info.title or '新会话')}"
+        f" · 模型 {escape(runtime.model_name)} · 思考 {'开' if runtime.thinking_enabled else '关'}"
+    )
+
+
+def _show_recovery_notice(runtime: AgentRuntime, renderer: TerminalRenderer) -> None:
+    """提示用户检查恢复过程中修补的中断记录。
+
+    作用:
+        在启动或切换后说明上次执行尚未完成，帮助用户核实工具的实际执行结果。
+
+    参数:
+        runtime: 已完成加载的运行时，recovered_turns 表示本次修复过的回合数。
+        renderer: 用于显示提示的终端渲染器。
+
+    返回:
+        无返回值（None）；没有修补记录时不输出提示。
+
+    行为说明:
+        1. 检查 recovered_turns 是否非零。
+        2. 有修补记录时显示检查历史的提示；修复工作已由 Runtime 完成，此处仅展示。
+    """
+
+    if runtime.recovered_turns:
+        renderer.status("[yellow]上次未完成的执行已标记中断；请先查看历史，工具不会自动重跑。[/]")
+
+
+def _show_sessions(runtime: AgentRuntime, renderer: TerminalRenderer) -> None:
+    """展示最近会话列表并标记当前会话。
+
+    作用:
+        供 /sessions 命令查找恢复入口，通过 Runtime 读取列表，再输出短 ID、时间和标题。
+
+    参数:
+        runtime: 提供 list_sessions() 和当前 session_id 的运行时。
+        renderer: 用于显示列表或空列表提示的终端渲染器。
+
+    返回:
+        无返回值（None）；列表为空时显示提示后返回。
+
+    行为说明:
+        1. 获取按最近活动排序的会话列表，处理空列表情况。
+        2. 短 ID 默认取前 8 位，在本次列表内出现歧义时延长，并转义动态文本。
+        3. 为当前会话加星号标记；真正恢复时仍由 Runtime 校验完整查询范围内的 ID。
+    """
+
+    sessions = runtime.list_sessions()
+    if not sessions:
+        renderer.status("[dim]还没有已保存的会话；发送第一条消息或设置标题后会出现在这里。[/]")
+        return
+    renderer.status("[bold]已保存的会话[/]（* 当前会话）")
+    for info in sessions:
+        length = 8
+        while length < len(info.session_id) and any(
+            other.session_id != info.session_id and other.session_id[:length] == info.session_id[:length]
+            for other in sessions
+        ):
+            length += 1
+        marker = "*" if info.session_id == runtime.session_id else " "
+        renderer.status(
+            f"{marker} {escape(info.session_id[:length])}  {escape(str(info.updated_at))}  "
+            f"{escape(info.title or '新会话')}"
+        )

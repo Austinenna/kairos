@@ -8,9 +8,9 @@ Kairos 是希腊语里“恰当的时机”。这个助手和普通聊天机器�
 
 源码参考范围见 [本地项目参考清单](references/SOURCE-MANIFEST.md)。用户无特殊说明时，只参考该清单内的本地项目，不额外补充其他项目。
 
-会话系统的通用对象、ID 生成方及关联关系见 [会话系统设计](docs/会话系统设计.md)（设计方案，尚未实现）。
+会话系统第一版已实现本地保存、恢复和切换；通用对象、ID 生成方、关联关系及代码接口见 [会话系统设计](docs/会话系统设计.md)。
 
-当前项目已完成阶段 0 的多轮对话和 token/费用统计，以及阶段 1 的 s1-1 至 s1-9，并支持图片输入。主程序通过 `kairos.runtime.AgentRuntime` 使用 Agent loop；`terminal_input.py` 管理终端图文草稿，`cli.py` 负责命令与提交，`terminal_renderer.py` 负责 Rich 渲染。s1-10 的双模型对比和阶段 2 仍待完成。接手时先读 [HANDOFF.md](HANDOFF.md) 和 [CLAUDE.md](CLAUDE.md)。
+当前项目已完成阶段 0 的多轮对话和 token/费用统计，以及阶段 1 的 s1-1 至 s1-9，并支持图片输入和持久化多会话。主程序通过 `kairos.runtime.AgentRuntime` 使用 Agent loop；`terminal_input.py` 管理终端图文草稿，`cli.py` 负责命令与提交，`terminal_renderer.py` 负责 Rich 渲染。s1-10 的双模型对比和阶段 2 仍待完成。接手时先读 [HANDOFF.md](HANDOFF.md) 和 [CLAUDE.md](CLAUDE.md)。
 
 ## 当前架构
 
@@ -22,10 +22,11 @@ kairos 主入口
   -> AgentRuntime.respond()    会话、模型、工具、数据库和日志的协调
   -> run_agent_turn()           模型请求、工具执行和跨轮循环
   -> providers/                 OpenAI 兼容或 Anthropic Messages 适配器
+  -> sessions.py + SQLite       会话、回合、步骤、消息和工具调用记录
   -> todos.py + SQLite          待办工具和持久化数据
 ```
 
-`src/kairos/runtime.py` 是应用的组装和协调边界：它根据 `Settings` 创建模型适配器，初始化 SQLite 和待办工具注册表，保存当前会话的 messages，并把一次用户输入交给 Agent loop。`src/kairos/cli.py` 只负责终端输入和命令，`src/kairos/terminal_renderer.py` 负责把结构化结果渲染为终端内容。
+`src/kairos/runtime.py` 是应用的组装和协调边界：它根据 `Settings` 创建模型适配器，初始化 SQLite、会话存储和待办工具注册表，加载当前会话的模型上下文，并把一次用户输入交给 Agent loop。`sessions.py` 持久保存完整消息及 ID 关联，`execution.py` 在模型和工具的执行边界记录步骤。`src/kairos/cli.py` 只负责终端输入和命令，`src/kairos/terminal_renderer.py` 负责把结构化结果渲染为终端内容。
 
 交互输入由 `terminal_input.py` 的 prompt_toolkit 编辑器负责；提交后交给现有 Rich 流式输出。`clipboard.py` 封装 macOS 原生剪贴板读取，`images.py` 负责图片校验、处理、快照和摘要。普通管道和功能受限的终端保留文字输入。
 
@@ -51,6 +52,8 @@ kairos 主入口
 
 Ctrl+C 或断流时，未完成模型响应不写入历史；已执行工具及其结果保留，工具副作用不会自动撤销。工具批次中断时给剩余调用补齐未执行或结果未确认标记。JSONL 日志和最终结果仍记录完整模型响应与工具结果，不逐片段重复保存正文。
 
+尚未产生完整助手消息就失败的用户输入会从后续模型上下文撤回，但仍以 `in_context=false` 保存在 SQLite 中供检查。恢复会话时只修补未完成的记录并提示中断，不自动重跑模型或工具。
+
 ## 快速开始
 
 需要 [uv](https://docs.astral.sh/uv/)。
@@ -60,6 +63,22 @@ cp .env.example .env      # 然后在 .env 里选择 KAIROS_PROVIDER 并填入�
 uv run kairos
 ```
 
+## 会话保存与恢复
+
+```bash
+uv run kairos                 # 新建会话
+uv run kairos --continue      # 恢复最近的会话
+uv run kairos --session ID    # 恢复指定会话，支持唯一 ID 前缀
+```
+
+`--continue` 与 `--session` 互斥；找不到可恢复会话时会提示错误并退出。进入 CLI 后使用 `/sessions` 查看短 ID、标题、更新时间和当前会话标记，再用 `/resume ID` 切换。默认标题取首条输入，可用 `/rename 标题` 修改。新建的空会话已经存入数据库，但只有发送过消息或手动命名后才进入列表。
+
+退出程序不会删除会话；`/new`、`/reset` 和 `/system 文本` 都会开启新会话并保留旧会话。切换、新建成功后清理当前附件草稿，失败时保留草稿。恢复会话会加载原 system 提示词、provider、model、思考设置及图文历史；密钥和服务地址仍读取当前配置，不保存到会话。
+
+`/history` 查看当前模型上下文；`/history --ids` 查看会话、回合、步骤、消息和工具调用的关联，包括已撤出上下文的输入记录。两种展示都只显示图片摘要，实际数据库保存处理后的图片快照，因此恢复后仍可追问原图。
+
+第一版支持单进程串行使用，没有跨进程并发写入保护。已通过离线测试及真实 PTY 的退出恢复检查，真实模型环境下的会话体验仍待验收。
+
 ## 图片输入
 
 在 macOS 交互终端运行 `uv run kairos`，复制截图后按 **Ctrl+V**，或把图片文件拖入输入框。图片以 `[图片 N]` 标签显示，可以继续编辑问题，按 **Enter** 将文字和图片一起发送。只有图片时默认要求描述图片；**Alt+Enter** 可以换行。
@@ -68,12 +87,12 @@ uv run kairos
 - 可以连续添加多张图；加载在后台串行进行，期间可编辑文字。失败附件需要删除后重新添加，加载中不能提交。
 - 支持完整图片路径的粘贴，包含引号或 shell 转义的空格、中文文件名。若终端拖放只插入普通路径，先在路径独占输入区时按 Enter 转成附件，再补充问题并发送。正文中提到的路径不会自动上传。
 - Ctrl+V 主动读取系统剪贴板，支持截图位图、Finder 复制的图片文件和文字；普通文字粘贴不会顺带读取旧剪贴板图片。Cmd+V 是否能传图片由终端决定。
-- `/help`、`/history`、`/think` 等命令不消耗待发图片；`/file 路径` 可把文本文件正文与待发图片一起提交。`/reset` 和更换 system 提示词会同时清空会话和附件草稿。
+- `/help`、`/history`、`/think` 等命令不消耗待发图片；`/file 路径` 可把文本文件正文与待发图片一起提交。新建或恢复会话成功后清空附件草稿，旧会话历史继续保留。
 - 请求失败且本轮输入被撤回时恢复原草稿；如果已保留完整模型回答或工具执行历史，则提示继续对话，不自动重新发送或执行工具。
 
 第一版接受静态 **PNG、JPEG、WebP**，根据实际内容验证格式，校正 EXIF 方向，并按需缩放或压缩；动画、损坏或无法处理的图片会明确报错。项目限额为：输入文件 20 MiB、6400 万像素，处理后最长边 2000 像素、编码图片文件 3 MiB；整段会话最多 8 张、累计 Base64 16 MiB。数量和体积限制同时生效，超限只拒绝新增图片，不自动删除旧图。这些是项目策略，不等同于网关或厂商的通用上限。
 
-图片加入草稿后保留处理好的内存快照，后续请求不再读取原文件；已发送图片随历史继续用于追问和工具续轮。OpenAI 适配器转换为 `image_url` data URL，Anthropic 转为 `image.source`。会话退出后不恢复图片，暂不提供图片生成、独立看图模型或模型主动读图工具。
+图片加入草稿后保留处理好的内存快照，后续请求不再读取原文件；已发送图片随历史保存到 SQLite，退出并恢复会话后仍可用于追问和工具续轮。尚未发送的附件草稿不持久化。OpenAI 适配器转换为 `image_url` data URL，Anthropic 转为 `image.source`。暂不提供图片生成、独立看图模型或模型主动读图工具。
 
 代码可使用 `load_image(path)` 和 `runtime.respond(prompt, images=(image,), on_event=handler)`；纯文字接口保持兼容。可选 `image_labels` 保留输入区中的稳定编号。真实载荷在 `runtime.messages` 中；`history()`、观察事件、JSONL 和错误展示使用图片摘要，不打印 Base64。图片用量采用 API 返回值。
 
@@ -81,11 +100,16 @@ uv run kairos
 
 | 命令 | 作用 |
 |---|---|
+| `/new [标题]` | 新建并切换会话，保留旧会话；标题可省略 |
+| `/sessions` | 查看已保存的会话和当前会话标记 |
+| `/resume ID` | 恢复指定会话，支持唯一 ID 前缀 |
+| `/rename 标题` | 重命名当前会话 |
 | `/history` | 查看会话历史；图片仅显示摘要，实际请求保留完整图片 |
-| `/system 文本` | 替换 system 提示词，并清空对话 |
-| `/think` | 开关思考模式 |
+| `/history --ids` | 查看五类对象及 ID 关联，包含不再进入模型上下文的记录 |
+| `/system 文本` | 使用新 system 提示词开启会话，保留旧会话；无参数时查看提示词 |
+| `/think` | 开关当前会话的思考模式并保存设置 |
 | `/file 路径` | 把一个文本文件的内容作为消息发出去 |
-| `/reset` | 清空对话 |
+| `/reset` | 开启新会话，沿用 system 提示词和模型设置，保留旧会话 |
 | `/exit` | 退出 |
 
 模型协议通过 `.env` 的 `KAIROS_PROVIDER` 选择：
@@ -112,13 +136,15 @@ ANTHROPIC_BASE_URL=https://gateway.example
 
 `KAIROS_API_KEY` 是通用的网关项目 Key；协议切换只改变请求格式和 Base URL，不需要更换 Key。
 
-待办数据保存在本地 `data/kairos.sqlite3`；主程序需要 `.env` 中所选协议对应的 API key。运行时的 `log_path` 可以由代码调用 `create_runtime()` 时显式传入。
+会话与待办数据共同保存在本地 `data/kairos.sqlite3`，会话使用独立的五张表；主程序需要 `.env` 中配置的 API key。运行时的 `log_path` 可以由代码调用 `create_runtime()` 时显式传入。会话管理接口与返回值说明见 [会话系统设计的实现说明](docs/会话系统设计.md#第一版实现)。
 
 待办支持新增、查询、修改、完成和删除，可直接输入“删除 ID 为 3 的待办”或“删除买牛奶这条待办”。删除工具按 ID 永久移除记录，未完成和已完成的待办均可删除；找不到 ID 时返回错误。助手收到标题描述时先查询定位，目标不明确时先询问。
 
 ## 当前验证基线
 
 离线测试覆盖主 CLI、图文输入、图片处理、统一运行时、Agent loop、两种协议的流式适配和终端渲染。使用真实 SDK 加模拟 SSE 验证正文提前显示、整批工具等待、图片历史回放、用量汇总、截断拒绝、中断恢复和载荷脱敏；终端输入使用真实 prompt_toolkit 的 pipe input 验证。
+
+2026-10-16 会话第一版完成后，222 项离线测试通过，Ruff 检查、格式检查及差异检查通过。覆盖五类 ID 关联、跨会话隔离、图文和协议字段恢复、工具中断、保存失败及数据库工具错误回滚；真实 `xterm-256color` PTY 使用临时 SQLite 和离线模型，完成命名、切换、退出后重新启动继续，以及 `/history --ids` 检查。未操作实际个人数据库，未请求真实网关验收本轮会话功能。
 
 2026-10-12 使用合成图片通过现有网关验证了 `deepseek-flash` 的 OpenAI／Anthropic 两种协议：识别图片中的随机代号、纯文字追问、按图片内容创建临时待办，均流式完成。待办仅写入临时数据库。macOS 原生剪贴板在隔离的临时 pasteboard 上验证文字、文件 URL、PNG 和空内容，不读取用户剪贴板。Finder 手工拖放及具体终端的 Cmd+V 仍需用户实际体验；两家不同模型的对比仍未完成。
 
