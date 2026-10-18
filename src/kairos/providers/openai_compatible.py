@@ -82,11 +82,7 @@ class OpenAICompatibleModel:
         }
         usage = field(response, "usage")
         if usage is not None:
-            result["usage"] = {
-                "prompt_tokens": field(usage, "prompt_tokens"),
-                "completion_tokens": field(usage, "completion_tokens"),
-                "total_tokens": field(usage, "total_tokens"),
-            }
+            result["usage"] = normalize_openai_usage(usage)
         reasoning_content = field(message, "reasoning_content")
         if reasoning_content is not None:
             result["reasoning_content"] = reasoning_content
@@ -115,7 +111,7 @@ class OpenAICompatibleModel:
             for chunk in response_stream:
                 chunk_usage = field(chunk, "usage")
                 if chunk_usage is not None:
-                    usage = _stream_usage(chunk_usage)
+                    usage = normalize_openai_usage(chunk_usage)
                 for choice in field(chunk, "choices", []) or []:
                     if field(choice, "index", 0) != 0:
                         continue
@@ -247,14 +243,55 @@ def _finish_tool_calls(parts: dict[int, dict[str, list[str]]]) -> list[dict]:
     return normalize_tool_calls(calls)
 
 
-def _stream_usage(usage: object) -> dict[str, Any]:
+def normalize_openai_usage(usage: object) -> dict[str, int | None]:
+    """将 OpenAI 兼容用量统一转换为可区分未知值与零值的字典。
+
+    作用:
+        为完整响应、流式响应及旧用量转换入口提供相同统计口径，不计算费用或修改用量。
+
+    参数:
+        usage: SDK 用量对象或字典；供应商可能省略缓存、思考等明细字段。
+
+    返回:
+        输入、输出、总量、缓存输入及思考 token 的字典（dict[str, int | None]）。
+        缺失或不是非负整数的值返回 None，显式零值保留为 0。
+
+    行为说明:
+        1. 缓存量优先读取顶层 prompt_cache_hit_tokens，再依次读取
+           prompt_tokens_details.prompt_cache_hit_tokens 和 cached_tokens。
+        2. 仅在字段缺失或为 None 时尝试下一来源，不以较低优先级来源覆盖显式零值。
+        3. 所有计数独立校验；无效计数保留未知，不猜测缓存量或思考量。
+    """
+
     cached = field(usage, "prompt_cache_hit_tokens")
     if cached is None:
-        cached = field(field(usage, "prompt_tokens_details"), "cached_tokens")
+        details = field(usage, "prompt_tokens_details")
+        cached = field(details, "prompt_cache_hit_tokens")
+        if cached is None:
+            cached = field(details, "cached_tokens")
     return {
-        "prompt_tokens": field(usage, "prompt_tokens"),
-        "completion_tokens": field(usage, "completion_tokens"),
-        "total_tokens": field(usage, "total_tokens"),
-        "cached_input_tokens": cached or 0,
-        "reasoning_tokens": field(field(usage, "completion_tokens_details"), "reasoning_tokens") or 0,
+        "prompt_tokens": _token_count(field(usage, "prompt_tokens")),
+        "completion_tokens": _token_count(field(usage, "completion_tokens")),
+        "total_tokens": _token_count(field(usage, "total_tokens")),
+        "cached_input_tokens": _token_count(cached),
+        "reasoning_tokens": _token_count(field(field(usage, "completion_tokens_details"), "reasoning_tokens")),
     }
+
+
+def _token_count(value: object) -> int | None:
+    """仅保留供应商返回的非负整数计数。
+
+    作用:
+        在协议用量归一化时隔离无效字段，使统计与展示无需转换不可信的计数。
+
+    参数:
+        value: 供应商的任意原始字段值。
+
+    返回:
+        非负整数（int）或表示未知的 None；布尔值不作为整数接受。
+
+    行为说明:
+        1. 检查整数类型和取值范围，原样返回有效计数，否则返回 None。
+    """
+
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None

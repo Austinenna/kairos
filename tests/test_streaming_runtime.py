@@ -138,7 +138,9 @@ def test_sdk_stream_displays_two_texts_then_runs_three_tools_and_continues(tmp_p
             assert result.messages[2]["content"] == "我先添加。共有三项。"
             assert result.usage.input_tokens == 30
             assert result.usage.output_tokens == 12
-            assert result.usage.cached_input_tokens == 2
+            # 第二次请求没有返回缓存明细，不能把第一次的已知值冒充整轮总量。
+            assert result.usage.cached_input_tokens is None
+            assert result.last_request_usage.input_tokens == 20
             assert len(result.tool_results) == 3
             assert "text_delta" not in [event["event"] for event in result.events]
     assert all(body.closed for body in bodies)

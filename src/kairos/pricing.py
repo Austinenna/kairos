@@ -7,6 +7,8 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from .providers.openai_compatible import normalize_openai_usage
+
 # (输入·缓存命中, 输入·缓存未命中, 输出)
 PRICES: dict[str, dict[str, tuple[float, float, float]]] = {
     "deepseek-flash": {"off_peak": (0.003, 0.15, 0.60), "peak": (0.006, 0.30, 1.20)},
@@ -27,31 +29,35 @@ PEAK_HOURS_UTC = [(1, 4), (6, 10)]
 
 @dataclass
 class Usage:
-    input_tokens: int
-    cached_input_tokens: int  # 输入里命中缓存的部分，价格便宜得多
-    output_tokens: int  # 包含思考用掉的 token
-    reasoning_tokens: int
+    input_tokens: int | None
+    cached_input_tokens: int | None  # 输入里命中缓存的部分；None 表示供应商没有给出有效计数
+    output_tokens: int | None  # 包含思考用掉的 token
+    reasoning_tokens: int | None
 
 
-def usage_from_openai(u) -> Usage:
-    """把 OpenAI 格式的 usage 对象转成我们自己的 Usage。
+def usage_from_openai(u: object) -> Usage:
+    """通过统一协议转换将 OpenAI 用量映射为 Usage。
 
-    缓存命中数在不同服务商、不同版本里放的位置不一样，所以几个地方都找一下。
+    作用:
+        保留旧用量入口，与模型适配器使用相同字段来源和未知值处理规则。
+
+    参数:
+        u: OpenAI 兼容的用量对象或字典。
+
+    返回:
+        结构化用量（Usage）；未提供或无效的计数字段为 None。
+
+    行为说明:
+        1. 委托 normalize_openai_usage 解析字段，不重复实现缓存来源选择。
+        2. 将统一字段映射为费用和展示使用的 Usage，不计算任何累计值。
     """
-    details = getattr(u, "prompt_tokens_details", None)
-    cached = (
-        getattr(u, "prompt_cache_hit_tokens", None)
-        or getattr(details, "prompt_cache_hit_tokens", None)
-        or getattr(details, "cached_tokens", None)
-        or 0
-    )
-    completion_details = getattr(u, "completion_tokens_details", None)
-    reasoning = getattr(completion_details, "reasoning_tokens", None) or 0
+
+    usage = normalize_openai_usage(u)
     return Usage(
-        input_tokens=u.prompt_tokens,
-        cached_input_tokens=cached,
-        output_tokens=u.completion_tokens,
-        reasoning_tokens=reasoning,
+        input_tokens=usage["prompt_tokens"],
+        cached_input_tokens=usage["cached_input_tokens"],
+        output_tokens=usage["completion_tokens"],
+        reasoning_tokens=usage["reasoning_tokens"],
     )
 
 
@@ -63,9 +69,27 @@ def is_peak(now: datetime | None = None) -> bool:
 
 
 def estimate_cost(model: str, usage: Usage, now: datetime | None = None) -> float | None:
-    """估算一次请求的费用（美元）。不认识的模型返回 None。"""
+    """按已知用量和现有价格表估算费用。
+
+    作用:
+        为终端展示计算美元费用；关键计数未知时不输出误导性的估算。
+
+    参数:
+        model: 价格表中的模型名称。
+        usage: 请求或回合累计用量，输入、输出和缓存输入计数可为 None。
+        now: 判断高峰价格的 UTC 时间；省略时使用当前时间。
+
+    返回:
+        估算费用（float，美元）；模型价格未知或关键计数缺失时返回 None。
+
+    行为说明:
+        1. 确认模型价格和输入、输出、缓存计数均已知。
+        2. 输入按缓存命中与未命中分别计费，输出整体计费。
+        3. 思考 token 已包含在输出量中，思考明细缺失不妨碍费用估算。
+    """
+
     table = PRICES.get(model)
-    if table is None:
+    if table is None or usage.input_tokens is None or usage.output_tokens is None or usage.cached_input_tokens is None:
         return None
     hit, miss, out = table["peak" if is_peak(now) else "off_peak"]
     uncached = usage.input_tokens - usage.cached_input_tokens

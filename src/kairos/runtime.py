@@ -64,6 +64,7 @@ class AgentTurnResult:
     session_id: str | None = None
     turn_id: str | None = None
     step_ids: tuple[str, ...] = ()
+    last_request_usage: Usage | None = None
 
 
 def build_tool_handlers(connection: Any) -> dict[str, ToolHandler]:
@@ -158,20 +159,78 @@ def build_model(
     raise ValueError(f"不支持的模型协议：{provider}")
 
 
+def _usage_from_event(event: dict[str, Any]) -> Usage | None:
+    """提取一次模型响应的用量，保留未返回的字段。
+
+    作用:
+        把观察事件转换为展示和费用计算使用的数据，避免缺失量或非法计数变成零。
+
+    参数:
+        event: model_response 事件；usage 使用适配器归一化后的字段名。
+
+    返回:
+        Usage 或 None；每个计数仅接受非负整数，未知字段保留 None。
+
+    行为说明:
+        1. 没有用量对象时返回 None；否则独立读取四个字段。
+        2. 不推算缓存或思考量，不修改事件，不因统计失败打断已完成回合。
+    """
+    raw = event.get("usage")
+    if not isinstance(raw, dict) or not raw:
+        return None
+    fields = ("prompt_tokens", "cached_input_tokens", "completion_tokens", "reasoning_tokens")
+    values = [raw.get(name) for name in fields]
+    return Usage(*(value if type(value) is int and value >= 0 else None for value in values))
+
+
 def _aggregate_usage(events: list[dict[str, Any]]) -> Usage | None:
-    """汇总一次 Agent 回合中所有模型请求的用量。"""
+    """汇总本轮所有请求的用量，缺项时保留未知。
+
+    作用:
+        生成一次用户回合的累计消耗，用于展示与估算费用，不表示上下文长度。
+
+    参数:
+        events: 按执行顺序排列的观察事件列表。
+
+    返回:
+        累计 Usage 或 None；某字段在任一次请求中未知，则该字段的累计值也未知。
+
+    行为说明:
+        1. 保留所有模型响应，包括未报告用量的响应。
+        2. 逐字段求和；全部请求都没有用量时返回 None，不把部分已知值冒充总量。
+    """
 
     response_events = [event for event in events if event.get("event") == "model_response"]
-    usages = [event.get("usage") for event in response_events if event.get("usage")]
-    if not usages:
+    usages = [_usage_from_event(event) for event in response_events]
+    if not any(usage is not None for usage in usages):
         return None
 
-    return Usage(
-        input_tokens=sum(int(usage.get("prompt_tokens") or 0) for usage in usages),
-        cached_input_tokens=sum(int(usage.get("cached_input_tokens") or 0) for usage in usages),
-        output_tokens=sum(int(usage.get("completion_tokens") or 0) for usage in usages),
-        reasoning_tokens=sum(int(usage.get("reasoning_tokens") or 0) for usage in usages),
-    )
+    totals = {}
+    for name in ("input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens"):
+        counts = [getattr(usage, name, None) for usage in usages]
+        totals[name] = sum(counts) if all(count is not None for count in counts) else None
+    return Usage(**totals)
+
+
+def _last_request_usage(events: list[dict[str, Any]]) -> Usage | None:
+    """读取最后一次模型请求的用量，不借用前一步数据。
+
+    作用:
+        为最近请求的完整输入占比提供依据，避免把累计消耗当作上下文长度。
+
+    参数:
+        events: 按执行顺序排列的观察事件列表。
+
+    返回:
+        最后一个 model_response 的 Usage，未报告时返回 None。
+
+    行为说明:
+        1. 倒序找到最后一个响应后立即转换；即使该响应没有用量也不继续回退。
+    """
+    for event in reversed(events):
+        if event.get("event") == "model_response":
+            return _usage_from_event(event)
+    return None
 
 
 def _finish_reason(events: list[dict[str, Any]]) -> str | None:
@@ -734,6 +793,7 @@ class AgentRuntime:
             session_id=self.session_id,
             turn_id=turn.turn_id,
             step_ids=tuple(recorder.step_ids),
+            last_request_usage=_last_request_usage(events),
         )
         self.last_result = result
         return result

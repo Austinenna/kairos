@@ -211,7 +211,13 @@ class TerminalRenderer:
             self.status("[yellow]回复被截断了：输出达到了长度上限。[/]")
 
         cost = estimate_cost(model, result.usage) if result.usage else None
-        self.render_usage(model, result.usage, cost, total_cost + (cost or 0.0))
+        self.render_usage(
+            model,
+            result.usage,
+            cost,
+            total_cost + (cost or 0.0),
+            last_request_usage=result.last_request_usage,
+        )
         return cost or 0.0
 
     def render_content(self, content: str) -> None:
@@ -243,19 +249,63 @@ class TerminalRenderer:
             parts.append(_LightMarkdown(content[cursor:]))
         return Group(*parts)
 
-    def render_usage(self, model: str, usage: Usage | None, cost: float | None, total_cost: float) -> None:
+    def render_usage(
+        self,
+        model: str,
+        usage: Usage | None,
+        cost: float | None,
+        total_cost: float,
+        *,
+        last_request_usage: Usage | None = None,
+    ) -> None:
+        """分别展示本轮累计消耗与最近请求的完整输入占比。
+
+        作用:
+            将运行时用量投影为终端文字，避免累计输入被误认为单次上下文长度。
+
+        参数:
+            model: 用于查询上下文窗口的模型名称。
+            usage: 本轮累计用量，缺失字段为 None。
+            cost: 本轮估算费用，未知时为 None。
+            total_cost: 已成功估算的费用累计，可能不包含缺少用量的回合。
+            last_request_usage: 最后一次请求的用量，其输入已包含那次发送的全部历史。
+
+        返回:
+            无返回值（None）；向终端打印统计文字。
+
+        行为说明:
+            1. 未知值明确显示未知，不按零计费；费用与上下文占比分别使用不同数据。
+            2. 最近输入占比不包含该请求随后产生的输出，也不表示下一请求剩余预算。
+        """
         if usage is None:
             self.status("[dim]（这一轮没有拿到用量数据）[/]")
-            return
+        else:
+            counts = {
+                name: f"{value:,}" if value is not None else "未知"
+                for name, value in (
+                    ("input", usage.input_tokens),
+                    ("cached", usage.cached_input_tokens),
+                    ("output", usage.output_tokens),
+                    ("reasoning", usage.reasoning_tokens),
+                )
+            }
+            self.status(
+                f"[dim]本轮累计输入 {counts['input']}（缓存命中 {counts['cached']}）"
+                f" · 输出 {counts['output']}（思考 {counts['reasoning']}）[/]"
+            )
 
-        parts = [
-            f"输入 {usage.input_tokens:,}（缓存命中 {usage.cached_input_tokens:,}）",
-            f"输出 {usage.output_tokens:,}"
-            + (f"（思考 {usage.reasoning_tokens:,}）" if usage.reasoning_tokens else ""),
-        ]
+        parts = []
         window = CONTEXT_WINDOW.get(model)
-        if window:
-            parts.append(f"上下文已用 {usage.input_tokens / window:.2%}")
+        latest_input = last_request_usage.input_tokens if last_request_usage is not None else None
+        if latest_input is None:
+            parts.append("最近请求输入未知")
+        elif window:
+            parts.append(f"最近请求输入 {latest_input:,} / {window:,}（{latest_input / window:.2%}，不含新输出）")
+        else:
+            parts.append(f"最近请求输入 {latest_input:,}（窗口未知，不含新输出）")
         if cost is not None:
-            parts.append(f"本轮 ${cost:.5f} · 累计 ${total_cost:.4f}" + (" · 高峰价" if is_peak() else ""))
+            parts.append(f"本轮 ${cost:.5f}" + (" · 高峰价" if is_peak() else ""))
+        else:
+            parts.append("本轮费用未估算")
+        parts.append(f"已估算累计 ${total_cost:.4f}")
         self.status("[dim]" + " · ".join(parts) + "[/]")
