@@ -111,7 +111,7 @@ uv run kairos --session ID    # 恢复指定会话，支持唯一 ID 前缀
 | `/history` | 查看会话历史；图片仅显示摘要，实际请求保留完整图片 |
 | `/history --ids` | 查看五类对象及 ID 关联，包含不再进入模型上下文的记录 |
 | `/system 文本` | 使用新 system 提示词开启会话，保留旧会话；无参数时查看提示词 |
-| `/think` | 开关当前会话的思考模式并保存设置 |
+| `/think` | 切换已接入模型的思考模式并保存设置；未接入时明确提示 |
 | `/file 路径` | 把一个文本文件的内容作为消息发出去 |
 | `/reset` | 开启新会话，沿用 system 提示词和模型设置，保留旧会话 |
 | `/exit` | 退出 |
@@ -139,6 +139,8 @@ ANTHROPIC_BASE_URL=https://gateway.example
 当前 Anthropic 适配器使用 Python `anthropic` SDK；选择该协议前需要在运行环境安装它。SDK 的请求路径是 `/v1/messages`，因此 Anthropic SDK 使用的网关根地址不要重复包含 `/v1`。代码中的统一字段是 `Settings.gateway_base_url`，环境变量使用 `GATEWAY_BASE_URL`。
 
 `KAIROS_API_KEY` 是通用的网关项目 Key；协议切换只改变请求格式和 Base URL，不需要更换 Key。
+
+当前思考开关仅接入 OpenAI 兼容协议下名称以 `deepseek` 开头的模型。其他模型显示“思考切换未接入”，`/think` 不改写设置；这不表示上游模型没有推理能力。恢复以前错误保存为开启的未接入会话时，会纠正为关闭并提示。切换会话按目标模型判断支持情况，开启/关闭仅修改 `thinking` 参数，保留其他请求选项。
 
 会话与待办数据共同保存在本地 `data/kairos.sqlite3`，会话使用独立的五张表；主程序需要 `.env` 中配置的 API key。运行时的 `log_path` 可以由代码调用 `create_runtime()` 时显式传入。会话管理接口与返回值说明见 [会话系统设计的实现说明](docs/会话系统设计.md#第一版实现)。
 

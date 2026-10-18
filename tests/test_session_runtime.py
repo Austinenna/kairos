@@ -10,7 +10,7 @@ from PIL import Image
 import kairos.runtime as runtime_module
 from kairos.config import Settings
 from kairos.images import load_image
-from kairos.providers import AnthropicMessagesModel
+from kairos.providers import AnthropicMessagesModel, OpenAICompatibleModel
 from kairos.runtime import create_runtime
 from kairos.todos import list_todos
 
@@ -280,7 +280,15 @@ def test_restoring_interrupted_turn_keeps_completed_tool_and_never_reexecutes_it
 
 def test_reset_creates_new_session_and_restores_original_prompt_and_thinking(tmp_path):
     database = tmp_path / "settings.sqlite3"
-    model = FakeModel([{"content": "旧会话回答"}, {"content": "新会话回答"}])
+    responses = iter(["旧会话回答", "新会话回答"])
+    requests = []
+
+    def create(**request):
+        requests.append(copy.deepcopy(request))
+        return {"choices": [{"message": {"content": next(responses)}, "finish_reason": "stop"}]}
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    model = OpenAICompatibleModel(model="deepseek-test", client=client)
     with create_runtime(model=model, db_path=database, system_prompt="原始规则", thinking_enabled=True) as runtime:
         old_id = runtime.session_id
         runtime.respond("旧会话问题")
@@ -297,10 +305,14 @@ def test_reset_creates_new_session_and_restores_original_prompt_and_thinking(tmp
         runtime.resume_session(new_id)
         assert runtime.system_prompt == "新规则"
         assert not runtime.thinking_enabled
+        assert [request["extra_body"]["thinking"]["type"] for request in requests] == ["enabled", "disabled"]
 
-    with create_runtime(model=FakeModel([]), db_path=database, session_id=old_id) as restored:
+    with create_runtime(
+        model=OpenAICompatibleModel(model="deepseek-test", client=client), db_path=database, session_id=old_id
+    ) as restored:
         assert restored.system_prompt == "原始规则"
         assert restored.thinking_enabled
+        assert restored.model.extra_body["thinking"]["type"] == "enabled"
         assert restored.history()[-1]["content"] == "旧会话回答"
 
 

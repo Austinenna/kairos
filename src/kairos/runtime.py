@@ -287,6 +287,25 @@ def _model_provider(model: Model) -> str:
     return "custom"
 
 
+def _supports_thinking(model: Model) -> bool:
+    """判断当前适配器是否已接入思考开关。
+
+    作用:
+        为新建、恢复和手动切换提供统一判断，不推断模型本身的推理能力。
+
+    参数:
+        model: 待使用的模型适配器；恢复时必须传入目标模型。
+
+    返回:
+        是否为已实现 thinking 请求参数的 DeepSeek OpenAI 兼容适配器（bool）。
+
+    行为说明:
+        1. 同时检查适配器类型和模型名称；自定义模型不会仅凭名称被视为已接入。
+    """
+
+    return isinstance(model, OpenAICompatibleModel) and model.model.startswith("deepseek")
+
+
 class AgentRuntime:
     """一个交互式 Agent 会话的中央协调器。"""
 
@@ -334,6 +353,9 @@ class AgentRuntime:
         返回:
             None。初始化后的实例持有当前会话 ID、模型上下文及执行依赖。
 
+        异常:
+            ValueError: 新建会话要求开启思考，但当前适配器尚未接入思考开关。
+
         行为说明:
             1. 保存依赖和资源归属标记，初始化回合状态及上次执行结果。
             2. 使用注入的存储或创建存储；无 session_info 时保存新会话。
@@ -359,6 +381,9 @@ class AgentRuntime:
         self._rebuild_model = rebuild_model
         self._owns_model_client = owns_model_client
         self.recovered_turns = 0
+        self.thinking_state_corrected = False
+        if session_info is None and thinking_enabled and not _supports_thinking(model):
+            raise ValueError("Kairos 尚未为当前模型接入思考开关，无法创建开启思考的会话")
         self.session_store = session_store or SessionStore(connection)
         info = session_info or self.session_store.create_session(
             system_prompt,
@@ -366,11 +391,30 @@ class AgentRuntime:
             model=self.model_name,
             thinking_enabled=thinking_enabled,
         )
-        self._activate_session(info, recover=session_info is not None)
+        self._activate_session(info, model=model, recover=session_info is not None)
 
     @property
     def model_name(self) -> str:
         return str(getattr(self.model, "model", "unknown"))
+
+    @property
+    def supports_thinking(self) -> bool:
+        """返回当前适配器是否已接入思考开关。
+
+        作用:
+            向 CLI 和设置入口提供与实际请求参数一致的支持状态。
+
+        参数:
+            无显式参数；读取当前激活的 model。
+
+        返回:
+            当前模型适配器是否允许切换思考（bool）。
+
+        行为说明:
+            1. 使用当前模型重新判断，不缓存上一个会话的能力。
+        """
+
+        return _supports_thinking(self.model)
 
     @property
     def session_id(self) -> str:
@@ -457,7 +501,7 @@ class AgentRuntime:
         if self._responding:
             raise RuntimeError("当前回合仍在执行，请等待结束后再操作会话")
 
-    def _activate_session(self, info: SessionInfo, *, recover: bool) -> None:
+    def _activate_session(self, info: SessionInfo, *, model: Model, recover: bool) -> None:
         """加载目标会话的上下文并更新当前会话状态。
 
         作用:
@@ -466,6 +510,7 @@ class AgentRuntime:
 
         参数:
             info: 已保存会话的元信息，提供 session_id 和 thinking_enabled。
+            model: 即将激活的目标模型，不能用旧会话的模型判断目标开关。
             recover: 是否先修补中断回合；新会话为 False，恢复已有会话为 True。
 
         返回:
@@ -478,9 +523,9 @@ class AgentRuntime:
         行为说明:
             1. 按 recover 决定是否修补中断记录，再加载 in_context 消息。
                修补只补齐记录和状态，不重新执行工具。
-            2. 校验系统消息及图片预算，通过后更新活动时间，再替换内存上下文。
+            2. 校验系统消息及图片预算，按目标模型纠正旧的无效思考开关并更新活动时间。
                前面的修补可能已经提交，因此加载失败不代表数据库完全未改变。
-            3. 应用保存的思考开关，重置上次结果、输入保留标记和存储故障标记，
+            3. 存储操作成功后应用开关并一起切换模型与会话，重置上次结果和故障标记，
                并记录本次修补的回合数；调用方负责事先检查空闲状态。
         """
 
@@ -489,14 +534,19 @@ class AgentRuntime:
         if not messages or messages[0].get("role") != "system" or not isinstance(messages[0].get("content"), str):
             raise ValueError("会话缺少有效的 system 提示词，无法恢复")
         validate_image_budget(messages, ())
+        thinking_corrected = info.thinking_enabled and not _supports_thinking(model)
+        if thinking_corrected:
+            info = self.session_store.update_thinking(info.session_id, False)
         self.session_store.touch_session(info.session_id)
+        self._apply_thinking(info.thinking_enabled, model=model)
+        self.model = model
         self._session_id = info.session_id
         self.messages = messages
         self.system_prompt = messages[0]["content"]
-        self._apply_thinking(info.thinking_enabled)
         self.last_result = None
         self.last_input_retained = False
         self.recovered_turns = recovered
+        self.thinking_state_corrected = thinking_corrected
         self._storage_failed = False
 
     def new_session(self, title: str | None = None, system_prompt: str | None = None) -> SessionInfo:
@@ -528,7 +578,7 @@ class AgentRuntime:
             thinking_enabled=self.thinking_enabled,
             title=title,
         )
-        self._activate_session(info, recover=False)
+        self._activate_session(info, model=self.model, recover=False)
         return self.session_info
 
     def list_sessions(self) -> list[SessionInfo]:
@@ -598,7 +648,7 @@ class AgentRuntime:
                准备适配器，认证信息仍来自当前配置，不从历史中恢复密钥。
             2. 激活目标会话。激活失败时，关闭此次新建且未使用注入客户端的
                适配器客户端；已经完成的数据库修补不会因此撤销。
-            3. 激活成功后替换模型并应用思考设置；仅在拥有关闭权时释放旧客户端。
+            3. 激活过程统一替换模型并应用思考设置；仅在拥有关闭权时释放旧客户端。
                旧客户端关闭失败可能发生在切换已经完成之后。
         """
 
@@ -619,13 +669,11 @@ class AgentRuntime:
 
         previous_model = self.model
         try:
-            self._activate_session(info, recover=True)
+            self._activate_session(info, model=model, recover=True)
         except (Exception, KeyboardInterrupt):
             if model is not previous_model and self._model_client is None:
                 self._close_model_client(model)
             raise
-        self.model = model
-        self._apply_thinking(info.thinking_enabled)
         if model is not previous_model and self._owns_model_client:
             self._close_model_client(previous_model)
         return self.session_info
@@ -809,13 +857,34 @@ class AgentRuntime:
         validate_image_budget(self.messages, images)
 
     def set_thinking(self, enabled: bool) -> None:
-        """更新当前会话设置，并应用到支持该参数的模型。"""
+        """校验并保存当前会话的思考开关。
+
+        作用:
+            作为手动切换入口，保证保存状态、界面状态与实际模型请求参数一致。
+
+        参数:
+            enabled: 要保存的布尔开关。
+
+        返回:
+            None。保存成功后更新内存模型的请求参数。
+
+        异常:
+            ValueError: 参数不是 bool，或当前适配器尚未接入思考开关。
+
+        行为说明:
+            1. 检查运行时空闲、参数类型及支持能力；不支持时不修改任何设置。
+            2. 先保存，再更新模型参数；存储失败时保留内存中的原状态。
+        """
 
         self._ensure_idle()
+        if type(enabled) is not bool:
+            raise ValueError("思考开关必须是布尔值")
+        if not self.supports_thinking:
+            raise ValueError("Kairos 尚未为当前模型接入思考开关")
         self.session_store.update_thinking(self.session_id, enabled)
-        self._apply_thinking(enabled)
+        self._apply_thinking(enabled, model=self.model)
 
-    def _apply_thinking(self, enabled: bool) -> None:
+    def _apply_thinking(self, enabled: bool, *, model: Model) -> None:
         """将思考开关应用到运行时及支持它的内存模型。
 
         作用:
@@ -823,19 +892,29 @@ class AgentRuntime:
 
         参数:
             enabled: 要应用的思考开关；调用方按布尔值传入，本函数不单独校验类型。
+            model: 要应用参数的目标模型；恢复时可以与当前 self.model 不同。
 
         返回:
             None。更新实例的 thinking_enabled，并按模型类型更新请求附加参数。
 
+        异常:
+            ValueError: 要求开启思考，但目标适配器尚未接入思考开关。
+
         行为说明:
-            1. 保存内存开关，再检查模型是否为名称以 deepseek 开头的 OpenAI 适配器。
-            2. 匹配时将 extra_body 整体设为对应的 thinking 参数；其他模型只更新
-               运行时标记，不代表对应模型协议已启用推理能力。
+            1. 检查目标能力；不允许保存无法落实到请求的开启状态。
+            2. 已接入时仅覆盖 extra_body 的 thinking 字段，保留其他请求选项。
+            3. 更新内存开关；未接入的模型只允许保持关闭，不构造推测的协议参数。
         """
 
+        supported = _supports_thinking(model)
+        if enabled and not supported:
+            raise ValueError("Kairos 尚未为当前模型接入思考开关")
+        if supported:
+            model.extra_body = {
+                **(model.extra_body or {}),
+                "thinking": {"type": "enabled" if enabled else "disabled"},
+            }
         self.thinking_enabled = enabled
-        if isinstance(self.model, OpenAICompatibleModel) and self.model.model.startswith("deepseek"):
-            self.model.extra_body = {"thinking": {"type": "enabled" if enabled else "disabled"}}
 
     def history(self) -> list[dict]:
         """生成当前模型上下文的图片摘要副本。

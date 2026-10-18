@@ -76,7 +76,8 @@ def test_commands_switch_persisted_history_and_show_ids(tmp_path):
 
         assert runtime.session_id == original_id
         assert runtime.session_info.title == "[red]会话 A"
-        assert runtime.thinking_enabled
+        assert not runtime.thinking_enabled
+        assert not runtime.session_info.thinking_enabled
         assert "A 的内容" in str(runtime.history())
         assert "B 的内容" not in str(runtime.history())
         assert len(runtime.list_sessions()) == 2
@@ -87,6 +88,8 @@ def test_commands_switch_persisted_history_and_show_ids(tmp_path):
         assert "* " in output
         assert "\\[red]会话 A" in output
         assert "模型 offline-model" in output
+        assert "思考切换未接入" in output
+        assert "Kairos 尚未为当前模型接入思考开关" in output
 
 
 def test_empty_session_list_and_invalid_commands_remain_interactive(tmp_path):
@@ -161,6 +164,8 @@ def test_model_and_thinking_display_follow_restored_session(monkeypatch):
         thinking_enabled = False
         system_prompt = "提示"
         recovered_turns = 0
+        supports_thinking = True
+        thinking_state_corrected = False
 
         @property
         def session_info(self):
@@ -202,6 +207,8 @@ def test_startup_and_resume_report_interrupted_execution(initial, restored):
         model_name = "offline-model"
         thinking_enabled = False
         recovered_turns = initial
+        supports_thinking = False
+        thinking_state_corrected = False
 
         def resume_session(self, reference):
             self.recovered_turns = restored

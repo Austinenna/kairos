@@ -30,7 +30,7 @@ HELP = """\
   /history        查看会话历史（图片显示摘要）
   /history --ids  查看会话、回合、步骤、消息和工具调用的 ID 关联
   /system 文本     使用新 system 提示词开启会话，保留旧会话
-  /think          开关思考模式
+  /think          开关思考模式（仅已接入的模型）
   /file 路径       把一个文本文件的内容作为你的消息发出去
   /reset          新建会话，保留 system 提示词和旧会话
   /exit           退出（也可以按 Ctrl+D）
@@ -260,20 +260,22 @@ def _session_label(runtime: AgentRuntime) -> str:
     """
 
     info = runtime.session_info
+    thinking = f"思考 {'开' if runtime.thinking_enabled else '关'}" if runtime.supports_thinking else "思考切换未接入"
     return (
         f"会话 {escape(info.session_id[:8])} · {escape(info.title or '新会话')}"
-        f" · 模型 {escape(runtime.model_name)} · 思考 {'开' if runtime.thinking_enabled else '关'}"
+        f" · 模型 {escape(runtime.model_name)} · {thinking}"
     )
 
 
 def _show_recovery_notice(runtime: AgentRuntime, renderer: TerminalRenderer) -> None:
-    """提示用户检查恢复过程中修补的中断记录。
+    """提示恢复过程中修补的执行记录和思考设置。
 
     作用:
         在启动或切换后说明上次执行尚未完成，帮助用户核实工具的实际执行结果。
 
     参数:
         runtime: 已完成加载的运行时，recovered_turns 表示本次修复过的回合数。
+            thinking_state_corrected 表示本次纠正了未接入模型的旧思考开启状态。
         renderer: 用于显示提示的终端渲染器。
 
     返回:
@@ -282,10 +284,13 @@ def _show_recovery_notice(runtime: AgentRuntime, renderer: TerminalRenderer) -> 
     行为说明:
         1. 检查 recovered_turns 是否非零。
         2. 有修补记录时显示检查历史的提示；修复工作已由 Runtime 完成，此处仅展示。
+        3. 旧会话的无效思考设置已纠正时，说明实际支持情况及保存结果。
     """
 
     if runtime.recovered_turns:
         renderer.status("[yellow]上次未完成的执行已标记中断；请先查看历史，工具不会自动重跑。[/]")
+    if runtime.thinking_state_corrected:
+        renderer.status("[yellow]当前模型的思考切换尚未接入，旧会话的开启状态已纠正为关闭。[/]")
 
 
 def _show_sessions(runtime: AgentRuntime, renderer: TerminalRenderer) -> None:

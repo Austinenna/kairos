@@ -26,6 +26,8 @@ class FakeRuntime:
     system_prompt = "系统提示"
     session_id = "fake-session"
     recovered_turns = 0
+    supports_thinking = True
+    thinking_state_corrected = False
 
     def __init__(self):
         self.prompts = []
