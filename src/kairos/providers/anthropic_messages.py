@@ -129,8 +129,34 @@ def _content_block(block: object) -> dict:
 
 
 def normalize_anthropic_response(response: object) -> dict:
-    """把 Anthropic SDK 的 Message 响应转换成 Agent Loop 使用的字典。"""
+    """校验 Anthropic 完整消息并转换为 Agent Loop 使用的字典。
 
+    作用:
+        统一处理非流式响应与组装完成的流式响应；工具调用完整有效后才返回执行入口。
+
+    参数:
+        response: SDK Message 对象或同结构字典，包含 content 和 stop_reason，可含 usage。
+
+    返回:
+        包含正文、工具、原始内容块、结束原因及可选用量的统一响应（dict）。
+
+    异常:
+        ValueError: 满足以下任一情况时抛出：
+            - stop_reason 不是非空字符串；
+            - 工具调用缺少有效 id、name 或对象参数；
+            - 工具调用 id 重复；
+            - 响应包含不支持的内容块；
+            - 工具调用是否存在与 tool_use 结束原因不一致。
+
+    行为说明:
+        1. 校验整批内容和结束原因，不执行工具，也不写入会话历史。
+        2. 保留思考签名和原始内容块供后续协议回放；参数拒绝非标准 JSON 数字。
+        3. 纯文本 max_tokens 等结束原因仍返回，让展示层说明回答被截断。
+    """
+
+    stop_reason = field(response, "stop_reason")
+    if not isinstance(stop_reason, str) or not stop_reason.strip():
+        raise ValueError("Anthropic 响应未完整结束：缺少有效 stop_reason")
     content = field(response, "content", []) or []
     text_parts: list[str] = []
     reasoning_parts: list[str] = []
@@ -167,17 +193,21 @@ def normalize_anthropic_response(response: object) -> dict:
                     "type": "function",
                     "function": {
                         "name": name,
-                        "arguments": json.dumps(dict(tool_input), ensure_ascii=False),
+                        "arguments": json.dumps(dict(tool_input), ensure_ascii=False, allow_nan=False),
                     },
                 }
             )
         elif block_type not in {"redacted_thinking"}:
             raise ValueError(f"Anthropic 返回了不支持的内容块：{block_type}")
 
+    if bool(tool_calls) != (stop_reason == "tool_use"):
+        raise ValueError("Anthropic 工具调用与 tool_use 结束原因不一致")
+
     result = {
         "content": "\n".join(text_parts) or None,
         "tool_calls": tool_calls,
         "provider_content": [_content_block(block) for block in content],
+        "finish_reason": stop_reason,
     }
     if reasoning_parts:
         result["reasoning_content"] = "\n".join(reasoning_parts)
@@ -196,9 +226,6 @@ def normalize_anthropic_response(response: object) -> dict:
             "completion_tokens": output_tokens,
             "total_tokens": (prompt_tokens or 0) + (output_tokens or 0),
         }
-    stop_reason = field(response, "stop_reason")
-    if stop_reason is not None:
-        result["finish_reason"] = stop_reason
     return result
 
 
@@ -320,8 +347,6 @@ class _MessageStream:
                 "usage": self.usage or None,
             }
         )
-        if bool(result["tool_calls"]) != (self.stop_reason == "tool_use"):
-            raise ValueError("Anthropic 工具调用与 tool_use 结束原因不一致")
         return result
 
 

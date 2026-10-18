@@ -1,12 +1,11 @@
 """OpenAI Chat Completions 兼容模型适配器。"""
 
-import json
 from collections.abc import Callable
 from typing import Any
 
 from openai import OpenAI
 
-from .common import field, normalize_tool_call
+from .common import field, normalize_tool_calls
 
 
 def openai_user_content(content: str | list[dict]) -> str | list[dict]:
@@ -70,10 +69,16 @@ class OpenAICompatibleModel:
         if message is None:
             raise ValueError("模型响应没有 message")
 
-        tool_calls = [normalize_tool_call(call) for call in (field(message, "tool_calls", []) or [])]
+        if field(message, "function_call") is not None:
+            raise ValueError("模型返回了不支持的旧式 function_call")
+        raw_calls = field(message, "tool_calls", []) or []
+        finish_reason = field(choices[0], "finish_reason")
+        _validate_finish_reason(finish_reason, has_tools=bool(raw_calls))
+        tool_calls = normalize_tool_calls(raw_calls)
         result = {
             "content": field(message, "content"),
             "tool_calls": tool_calls,
+            "finish_reason": finish_reason,
         }
         usage = field(response, "usage")
         if usage is not None:
@@ -82,9 +87,6 @@ class OpenAICompatibleModel:
                 "completion_tokens": field(usage, "completion_tokens"),
                 "total_tokens": field(usage, "total_tokens"),
             }
-        finish_reason = field(choices[0], "finish_reason")
-        if finish_reason is not None:
-            result["finish_reason"] = finish_reason
         reasoning_content = field(message, "reasoning_content")
         if reasoning_content is not None:
             result["reasoning_content"] = reasoning_content
@@ -144,14 +146,7 @@ class OpenAICompatibleModel:
                         finish_reason = reason
 
             # finish_reason 后仍可能有 choices=[] 的用量帧，必须读到流结束再校验和返回。
-            if finish_reason is None:
-                raise ValueError("模型流未完整结束：缺少 finish_reason")
-            if finish_reason not in {"stop", "tool_calls", "length", "content_filter"}:
-                raise ValueError(f"模型流返回了不支持的 finish_reason：{finish_reason}")
-            if tool_parts and finish_reason in {"length", "content_filter"}:
-                raise ValueError(f"模型工具调用未完整结束：finish_reason={finish_reason}")
-            if finish_reason == "tool_calls" and not tool_parts:
-                raise ValueError("模型以 tool_calls 结束，但没有工具调用")
+            _validate_finish_reason(finish_reason, has_tools=bool(tool_parts))
 
             result: dict[str, Any] = {
                 "content": "".join(text_parts) if text_parts else None,
@@ -187,26 +182,61 @@ def _append_tool_delta(parts: dict[int, dict[str, list[str]]], call: object) -> 
             item[key].append(value)
 
 
-def _reject_json_constant(value: str) -> None:
-    raise ValueError(f"工具参数包含非 JSON 常量：{value}")
+def _validate_finish_reason(finish_reason: object, *, has_tools: bool) -> None:
+    """统一校验 OpenAI 完整响应与流式响应的结束原因。
+
+    作用:
+        在协议适配器返回响应前阻止截断的工具调用进入执行流程，不执行工具或写入历史。
+
+    参数:
+        finish_reason: 模型返回的结束原因；必须是当前支持的字符串。
+        has_tools: 响应是否包含工具调用，结构校验由工具归一化函数负责。
+
+    返回:
+        无返回值（None）；通过校验后调用方可以继续构造响应。
+
+    异常:
+        ValueError: 满足以下任一情况时抛出：
+            - 缺少 finish_reason；
+            - finish_reason 不是支持的字符串；
+            - 有工具调用但因 length 或 content_filter 结束；
+            - 以 tool_calls 结束却没有工具调用。
+
+    行为说明:
+        1. 检查结束标记，再校验它与工具调用是否一致。
+        2. 保留 stop 携带完整工具调用的兼容行为；截断纯文本可返回供界面提示。
+    """
+
+    if finish_reason is None:
+        raise ValueError("模型响应未完整结束：缺少 finish_reason")
+    if not isinstance(finish_reason, str) or finish_reason not in {"stop", "tool_calls", "length", "content_filter"}:
+        raise ValueError(f"模型返回了不支持的 finish_reason：{finish_reason}")
+    if has_tools and finish_reason in {"length", "content_filter"}:
+        raise ValueError(f"模型工具调用未完整结束：finish_reason={finish_reason}")
+    if finish_reason == "tool_calls" and not has_tools:
+        raise ValueError("模型以 tool_calls 结束，但没有工具调用")
 
 
 def _finish_tool_calls(parts: dict[int, dict[str, list[str]]]) -> list[dict]:
+    """合并工具调用片段并通过整批完整性校验。
+
+    作用:
+        将流式传输积累的片段转成与非流式相同的工具结构，供统一校验入口处理。
+
+    参数:
+        parts: 以工具索引为键、以 id、name、arguments 片段列表为值的字典。
+
+    返回:
+        按工具索引排序、经完整校验的调用列表（list[dict]）。
+
+    行为说明:
+        1. 按索引拼接片段，保持工具顺序及参数原文。
+        2. 委托 normalize_tool_calls 校验整批结构与 JSON，全部通过后才返回。
+    """
+
     calls: list[dict] = []
-    seen_ids: set[str] = set()
     for index in sorted(parts):
         item = {key: "".join(fragments) for key, fragments in parts[index].items()}
-        if not item["id"].strip() or not item["name"].strip():
-            raise ValueError("模型返回的工具调用缺少 id 或 name")
-        if item["id"] in seen_ids:
-            raise ValueError("模型返回了重复的工具调用 id")
-        seen_ids.add(item["id"])
-        try:
-            arguments = json.loads(item["arguments"], parse_constant=_reject_json_constant)
-        except ValueError as error:
-            raise ValueError("模型工具调用参数不是完整的 JSON 对象") from error
-        if not isinstance(arguments, dict):
-            raise ValueError("模型工具调用参数必须是 JSON 对象")
         calls.append(
             {
                 "id": item["id"],
@@ -214,7 +244,7 @@ def _finish_tool_calls(parts: dict[int, dict[str, list[str]]]) -> list[dict]:
                 "function": {"name": item["name"], "arguments": item["arguments"]},
             }
         )
-    return calls
+    return normalize_tool_calls(calls)
 
 
 def _stream_usage(usage: object) -> dict[str, Any]:
