@@ -30,16 +30,29 @@ CREATE INDEX IF NOT EXISTS idx_todos_due_at ON todos(due_at);
 
 
 def initialize_database(db_path: str | Path) -> sqlite3.Connection:
-    """创建待办数据库并返回连接。
+    """初始化用户数据库并返回连接。
 
-    ``due_at`` 和时间字段统一保存为 ISO 8601 文本；SQLite 没有独立的日期类型，
-    这样可以保留时区信息，也方便后续转换成 Python 的 datetime。
-    ``tags`` 暂时保存为 JSON 文本，等工具层实现时再负责转换成字符串列表。
+    作用:
+        为运行时创建数据目录和待办表；会话及其他存储继续复用此连接。
+
+    参数:
+        db_path: 数据库文件路径；支持用户目录缩写和测试传入的临时路径。
+
+    返回:
+        使用 sqlite3.Row 读取结果的数据库连接（sqlite3.Connection）。
+
+    行为说明:
+        1. 创建缺失的父目录，新的目录只允许当前用户访问。
+        2. 打开数据库；新文件设置为仅当前用户可读写，不修改已有文件权限。
+        3. 初始化表和索引；日期保存为 ISO 8601 文本，tags 保存为 JSON 文本。
     """
     path = Path(db_path).expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    existed = path.exists()
 
     connection = sqlite3.connect(path)
+    if not existed:
+        path.chmod(0o600)
     connection.row_factory = sqlite3.Row
     connection.executescript(TODO_SCHEMA)
     connection.commit()

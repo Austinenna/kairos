@@ -65,7 +65,10 @@ Ctrl+C 或断流时，未完成模型响应不写入历史；已执行工具及�
 需要 [uv](https://docs.astral.sh/uv/)。
 
 ```bash
-cp .env.example .env      # 然后在 .env 里选择 KAIROS_PROVIDER 并填入对应的 key
+mkdir -p ~/.kairos
+chmod 700 ~/.kairos
+cp .env.example ~/.kairos/.env  # 然后编辑该文件，填写模型与网关配置
+chmod 600 ~/.kairos/.env
 uv run kairos
 ```
 
@@ -118,7 +121,7 @@ uv run kairos --session ID    # 恢复指定会话，支持唯一 ID 前缀
 | `/reset` | 开启新会话，沿用 system 提示词和模型设置，保留旧会话 |
 | `/exit` | 退出 |
 
-模型协议通过 `.env` 的 `KAIROS_PROVIDER` 选择：
+模型协议通过 `~/.kairos/.env` 的 `KAIROS_PROVIDER` 选择：
 
 ```dotenv
 KAIROS_PROVIDER=openai       # 当前示例是 DeepSeek 的 OpenAI 兼容接口
@@ -144,7 +147,7 @@ ANTHROPIC_BASE_URL=https://gateway.example
 
 当前思考开关仅接入 OpenAI 兼容协议下名称以 `deepseek` 开头的模型。其他模型显示“思考切换未接入”，`/think` 不改写设置；这不表示上游模型没有推理能力。恢复以前错误保存为开启的未接入会话时，会纠正为关闭并提示。切换会话按目标模型判断支持情况，开启/关闭仅修改 `thinking` 参数，保留其他请求选项。
 
-会话与待办数据共同保存在本地 `data/kairos.sqlite3`，会话使用独立的五张表；主程序需要 `.env` 中配置的 API key。运行时的 `log_path` 可以由代码调用 `create_runtime()` 时显式传入。会话管理接口与返回值说明见 [会话系统设计的实现说明](docs/会话系统设计.md#第一版实现)。
+会话与待办数据共同保存在当前系统用户的 `~/.kairos/kairos.sqlite3`，会话使用独立的五张表；主程序从 `~/.kairos/.env` 读取模型和 API key 配置，环境变量仍可覆盖文件值。更换电脑后使用新电脑当前用户的主目录，不依赖项目位置或启动目录。配置和历史数据不会自动跨电脑同步。运行时的 `log_path` 可以由代码调用 `create_runtime()` 时显式传入。会话管理接口与返回值说明见 [会话系统设计的实现说明](docs/会话系统设计.md#第一版实现)。
 
 待办支持新增、查询、修改、完成和删除，可直接输入“删除 ID 为 3 的待办”或“删除买牛奶这条待办”。删除工具按 ID 永久移除记录，未完成和已完成的待办均可删除；找不到 ID 时返回错误。助手收到标题描述时先查询定位，目标不明确时先询问。
 

@@ -15,8 +15,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from . import config
 from .agent_loop import AgentLoopLimitError, EventLogger, Model, ToolHandler, run_agent_turn, sanitize_error
-from .config import PROJECT_ROOT, Settings
+from .config import Settings
 from .execution import TurnRecorder
 from .images import ImageInput, redact_images, validate_image_budget
 from .observability import JsonlLogger
@@ -1016,7 +1017,7 @@ def create_runtime(
             调用方。显式传入 model 时，其实际客户端由该模型自行持有。
         model: 可选的现成模型；省略时由工厂创建。恢复时注入模型的协议与名称
             必须匹配保存的会话，工厂不会自动替换注入模型。
-        db_path: 数据库路径；省略时使用项目 data/kairos.sqlite3。
+        db_path: 数据库路径；省略时使用当前用户 ~/.kairos/kairos.sqlite3。
         log_path: 可选的 JSONL 观察日志路径；省略时不设置事件日志器。
         system_prompt: 新会话的系统提示词；恢复时采用保存的提示词。
         thinking_enabled: 新会话的思考开关；恢复时采用保存的开关。
@@ -1050,7 +1051,7 @@ def create_runtime(
     managed_model = model is None
     if managed_model:
         settings = settings or Settings()
-    database_path = db_path or PROJECT_ROOT / "data" / "kairos.sqlite3"
+    database_path = db_path if db_path is not None else config.get_app_dir() / "kairos.sqlite3"
     connection = initialize_database(database_path)
     runtime_model = None
     try:

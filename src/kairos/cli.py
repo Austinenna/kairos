@@ -92,12 +92,13 @@ def run(
                 try:
                     settings = settings or Settings()
                 except ValidationError:
-                    renderer.error("[red]配置无效。[/]把 .env.example 复制成 .env，并检查模型配置后再运行。")
+                    renderer.error("[red]配置无效。[/]把 .env.example 复制到 ~/.kairos/.env，并检查模型配置后再运行。")
                     return
 
                 if not settings.kairos_api_key:
                     renderer.error(
-                        "[red]没有找到 KAIROS_API_KEY。[/]把 .env.example 复制成 .env，填入网关项目 Key 再运行。"
+                        "[red]没有找到 KAIROS_API_KEY。[/]"
+                        "把 .env.example 复制到 ~/.kairos/.env，填入网关项目 Key 再运行。"
                     )
                     return
                 runtime = create_runtime(settings=settings, session_id=session_id, resume_latest=resume_latest)
@@ -215,7 +216,7 @@ def run(
             except KeyboardInterrupt:
                 renderer.status("\n[yellow]已中断。未完成的模型回答不计入历史，已执行的工具不会撤销。[/]")
             except openai.AuthenticationError:
-                renderer.error("\n[red]API key 无效。[/]检查 .env 里的 KAIROS_API_KEY。")
+                renderer.error("\n[red]API key 无效。[/]检查 ~/.kairos/.env 里的 KAIROS_API_KEY。")
             except openai.APIStatusError as e:
                 renderer.error(f"\n[red]请求失败（HTTP {e.status_code}）：[/]{escape(str(redact_images(e.message)))}")
             except openai.APIConnectionError:

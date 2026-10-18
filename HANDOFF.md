@@ -8,7 +8,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 
 - 项目按正式应用维护，当前仓库用于持续开发。
 - 当前代码完成阶段 0：命令行多轮对话、流式输出、思考模式切换、消息历史查看、文件输入，以及 token/费用统计。
-- `src/kairos/config.py` 从项目根目录 `.env` 和环境变量读取模型协议配置；统一网关地址字段是 `Settings.gateway_base_url`，环境变量使用 `GATEWAY_BASE_URL`；`src/kairos/pricing.py` 负责用量转换和费用估算。
+- `src/kairos/config.py` 从当前系统用户 `~/.kairos/.env` 和环境变量读取模型协议配置；统一网关地址字段是 `Settings.gateway_base_url`，环境变量使用 `GATEWAY_BASE_URL`；`src/kairos/pricing.py` 负责用量转换和费用估算。
 - 阶段 1 已完成 s1-1 至 s1-9：SQLite 待办函数、工具 Schema、支持同一响应多个工具调用、跨轮继续调用、工具错误回传、最大工具响应轮数和 JSONL 观测日志的手写循环，以及把 OpenAI 兼容格式和 Anthropic Messages 格式转换到同一内部接口的模型适配层。主入口 `kairos -> cli.run() -> AgentRuntime.respond() -> run_agent_turn()` 已接通 Agent loop 和正文流式输出；可复用运行时位于 `src/kairos/runtime.py`，协议实现位于 `src/kairos/providers/`。
 - 流式策略：正文即时展示，每次模型流正常结束、参数完整后才串行执行整批工具，再把结果交回模型。中断不保存残缺模型响应，但保留已执行的工具结果；不自动重跑整个回合。详细调用与展示规则见 README 的“流式对话与工具调用”。
 - 阶段 1 的 s1-10（同一批请求在两家模型上运行并比较工具调用格式和行为）尚未完成；阶段 2 尚未开始。
@@ -20,12 +20,12 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 ## 正常运行流程
 
 1. 安装 Python 3.13、`uv`。
-2. 复制 `.env.example` 为 `.env`，设置 `KAIROS_PROVIDER`、`KAIROS_MODEL`、通用的 `KAIROS_API_KEY` 和 `GATEWAY_BASE_URL`；`KAIROS_MODEL` 与 `GATEWAY_BASE_URL` 没有代码默认值，选择 `anthropic` 时，在需要时再设置不含 `/v1` 的 `ANTHROPIC_BASE_URL`。
+2. 创建 `~/.kairos/`，复制 `.env.example` 为 `~/.kairos/.env`，设置 `KAIROS_PROVIDER`、`KAIROS_MODEL`、通用的 `KAIROS_API_KEY` 和 `GATEWAY_BASE_URL`；`KAIROS_MODEL` 与 `GATEWAY_BASE_URL` 没有代码默认值，选择 `anthropic` 时，在需要时再设置不含 `/v1` 的 `ANTHROPIC_BASE_URL`。
 3. 在项目根目录运行 `uv run kairos` 新建会话，`uv run kairos --continue` 恢复最近会话，或 `uv run kairos --session ID` 恢复指定会话；后两个参数互斥。进入后使用 `/sessions`、`/resume ID` 切换，`/new [标题]` 新建，`/rename 标题` 改名。`/reset` 和 `/system 文本` 保留旧会话并开启新会话。
 4. 运行 `uv run pytest -q` 和 `uv run ruff check .` 做基础检查；流式离线测试不消耗 API 额度。
 5. 使用 VS Code 的 `Kairos CLI` 配置进入主程序，在 `cli.py`、`terminal_renderer.py`、`runtime.py`、`agent_loop.py` 和 `todos.py` 的边界设置断点。
 
-真实密钥及本地会话、待办数据库不提交 Git。会话正文和已发送图片会持久保存到本地 `data/kairos.sqlite3`，密钥和 endpoint 仍从当前配置读取。流式改造最初使用模拟数据验收；图片接入阶段追加的真实网关测试仅发送合成图片，并使用临时待办数据库。
+真实密钥及本地会话、待办数据库不提交 Git。会话正文和已发送图片会持久保存到本地 `~/.kairos/kairos.sqlite3`，密钥和 endpoint 仍从当前配置读取。流式改造最初使用模拟数据验收；图片接入阶段追加的真实网关测试仅发送合成图片，并使用临时待办数据库。
 
 ## 会话实现与接手边界
 
