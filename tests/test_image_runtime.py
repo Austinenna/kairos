@@ -89,7 +89,12 @@ def test_image_only_prompt_and_empty_text_validation(tmp_path, picture):
     model = FakeModel([{"content": "一张图片。"}])
     with create_runtime(model=model, db_path=tmp_path / "test.sqlite3") as runtime:
         runtime.respond("  ", images=[picture])
-        assert model.requests[0][1]["content"][0] == {"type": "text", "text": "请描述这些图片。"}
+        user = next(
+            message
+            for message in model.requests[0]
+            if message["role"] == "user" and isinstance(message["content"], list)
+        )
+        assert user["content"][0] == {"type": "text", "text": "请描述这些图片。"}
         before = copy.deepcopy(runtime.messages)
         with pytest.raises(ValueError, match="不能为空"):
             runtime.respond("  ")
@@ -142,7 +147,12 @@ def test_error_and_observation_callbacks_cannot_expose_or_mutate_image_payload(t
     def observe(event):
         events.append(copy.deepcopy(event))
         if event["event"] == "model_request":
-            event["messages"][1]["content"].clear()
+            user = next(
+                message
+                for message in event["messages"]
+                if message["role"] == "user" and isinstance(message["content"], list)
+            )
+            user["content"].clear()
 
     with create_runtime(model=model, db_path=tmp_path / "test.sqlite3", log_path=log_path) as runtime:
         with pytest.raises(RuntimeError) as raised:

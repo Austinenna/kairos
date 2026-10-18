@@ -72,7 +72,8 @@ def managed_runtime(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runtime_module, "build_model", build)
     settings = Settings(_env_file=None, gateway_base_url="https://offline.invalid/v1", kairos_model="deepseek-test")
-    return create_runtime(settings=settings, db_path=tmp_path / "sessions.sqlite3"), built_models
+    # 此组验证主模型的适配器切换；后台提取工厂由独立记忆集成测试覆盖。
+    return create_runtime(settings=settings, db_path=tmp_path / "sessions.sqlite3", auto_memory=False), built_models
 
 
 def test_thinking_toggle_changes_requests_and_persisted_state_without_losing_extra_options(tmp_path):

@@ -9,6 +9,7 @@ from anthropic import Anthropic
 from openai import OpenAI
 from PIL import Image
 
+from kairos.context import REFERENCE_HEADER
 from kairos.images import prepare_image
 from kairos.providers import AnthropicMessagesModel, OpenAICompatibleModel
 from kairos.runtime import create_runtime
@@ -125,7 +126,17 @@ def test_sdk_sends_full_image_in_both_modes_and_retains_it_across_tools_and_foll
     else:
         expected = {"type": "image", "source": {"type": "base64", "media_type": image.mime_type, "data": image.data}}
     for request in requests:
-        user = next(message for message in request["messages"] if message["role"] == "user")
+        references = [
+            message for message in request["messages"] if str(message.get("content", "")).startswith(REFERENCE_HEADER)
+        ]
+        assert len(references) == 1
+        user = next(
+            message
+            for message in request["messages"]
+            if message["role"] == "user"
+            and isinstance(message["content"], list)
+            and message["content"][0] == {"type": "text", "text": "结合图片查询待办"}
+        )
         assert user["content"] == [
             {"type": "text", "text": "结合图片查询待办"},
             {"type": "text", "text": "[图片 1：offline.png]"},
@@ -133,17 +144,26 @@ def test_sdk_sends_full_image_in_both_modes_and_retains_it_across_tools_and_foll
         ]
     assert requests[-1]["messages"][-1] == {"role": "user", "content": "继续解释"}
     if provider == "openai":
-        assistant = requests[1]["messages"][2]
+        assistant = next(message for message in requests[1]["messages"] if message["role"] == "assistant")
         assert assistant["reasoning_content"] == "保留推理字段"
         assert assistant["tool_calls"][0]["function"]["name"] == "list_todos"
-        assert requests[1]["messages"][3] == {"role": "tool", "tool_call_id": "read_1", "content": "[]"}
+        result = next(message for message in requests[1]["messages"] if message["role"] == "tool")
+        assert result == {"role": "tool", "tool_call_id": "read_1", "content": "[]"}
+        assert assistant["tool_calls"][0]["id"] == result["tool_call_id"]
     else:
-        assert requests[1]["messages"][1]["content"][0] == {
+        assistant = next(message for message in requests[1]["messages"] if message["role"] == "assistant")
+        assert assistant["content"][0] == {
             "type": "thinking",
             "thinking": "保留推理块",
             "signature": "offline-signature",
         }
-        assert requests[1]["messages"][2] == {
+        result = next(
+            message
+            for message in requests[1]["messages"]
+            if isinstance(message["content"], list) and message["content"][0].get("type") == "tool_result"
+        )
+        assert result == {
             "role": "user",
             "content": [{"type": "tool_result", "tool_use_id": "read_1", "content": "[]"}],
         }
+        assert assistant["content"][-1]["id"] == result["content"][0]["tool_use_id"]

@@ -104,7 +104,8 @@ def test_sdk_stream_displays_two_texts_then_runs_three_tools_and_continues(tmp_p
             tools = [message for message in body["messages"] if message["role"] == "tool"]
             assert [message["tool_call_id"] for message in tools] == ["call_0", "call_1", "call_2"]
             assert [json.loads(message["content"])["id"] for message in tools] == [1, 2, 3]
-            assert body["messages"][2]["reasoning_content"] == "准备工具"
+            assistant = next(message for message in body["messages"] if message["role"] == "assistant")
+            assert assistant["reasoning_content"] == "准备工具"
         requests.append(body)
         return httpx2.Response(200, headers={"Content-Type": "text/event-stream"}, stream=bodies[len(requests) - 1])
 
@@ -364,8 +365,14 @@ def test_anthropic_sdk_stream_replays_signed_content_through_runtime(tmp_path):
         body = json.loads(request.content)
         if requests:
             assert first.closed and first.drained
-            assert body["messages"][1] == {"role": "assistant", "content": blocks}
-            assert body["messages"][2]["content"] == [
+            assistant = next(message for message in body["messages"] if message["role"] == "assistant")
+            assert assistant == {"role": "assistant", "content": blocks}
+            tool_result = next(
+                message
+                for message in body["messages"]
+                if isinstance(message["content"], list) and message["content"][0].get("type") == "tool_result"
+            )
+            assert tool_result["content"] == [
                 {
                     "type": "tool_result",
                     "tool_use_id": "query_1",

@@ -131,6 +131,7 @@ def run_agent_turn(
     logger: EventLogger | None = None,
     on_event: EventLogger | None = None,
     recorder: ExecutionRecorder | None = None,
+    prepare_messages: Callable[[list[dict]], list[dict]] | None = None,
 ) -> tuple[str, list[dict]]:
     """执行一次包含模型生成和工具调用的 Agent 回合。
 
@@ -147,6 +148,8 @@ def run_agent_turn(
         logger: 可选日志回调，接收图片已脱敏的完整请求、响应、错误和工具结果事件。
         on_event: 可选展示回调，额外实时接收 text_delta；正文片段不写入 logger。
         recorder: 可选执行记录器，负责 ID 关联和持久化；省略时仅维护内存历史。
+        prepare_messages: 可选请求上下文构建函数，每次模型调用前接收原始历史并返回请求副本。
+            构建函数不得修改原始历史；省略时沿用原始消息列表。
 
     返回:
         最终回答正文与更新后的消息列表（tuple[str, list[dict]]）。
@@ -160,10 +163,11 @@ def run_agent_turn(
         Exception / KeyboardInterrupt（显式重新抛出）: 对应本函数的三处裸 raise:
             - 模型生成或正文回调失败，发送 model_error 事件后重新抛出;
             - 工具批次处理失败，尝试补齐未配对结果，收尾成功后重新抛出;
-            - 步骤执行失败，尝试记录步骤结束状态，收尾成功后重新抛出。
+            - 请求上下文构建或步骤执行失败，尝试记录步骤结束状态，收尾成功后重新抛出。
 
     行为说明:
-        1. 每次迭代开始步骤、发送当前上下文；流式片段即时展示，完整模型响应随后处理。
+        1. 每次迭代开始步骤，通过可选构建函数生成请求上下文；观察事件与模型使用同一副本。
+           流式片段即时展示，完整模型响应随后处理；合成请求内容不追加到原始历史。
         2. 对工具响应先验证调用 ID，再保存完整助手消息和调用记录；保存成功后串行执行工具。
            每个结果通过原 tool_call_id 配对并追加到历史，再进入下一次模型生成。
         3. 无工具调用时保存最终回答并结束；工具批次中断时区分未执行和结果未知，
@@ -234,13 +238,16 @@ def run_agent_turn(
         request_number += 1
         if recorder:
             recorder.start_step(request_number)
+        request_messages = messages
         try:
+            if prepare_messages is not None:
+                request_messages = prepare_messages(messages)
             emit(
                 {
                     "event": "model_request",
                     "request_number": request_number,
                     "tool_round": tool_rounds,
-                    "messages": list(messages),
+                    "messages": list(request_messages),
                     "tools": list(tool_schemas),
                 }
             )
@@ -248,9 +255,9 @@ def run_agent_turn(
             model_started = perf_counter()
             try:
                 if on_event is not None and isinstance(model, StreamingModel):
-                    response = model.stream(messages=messages, tools=tool_schemas, on_text=text_delta)
+                    response = model.stream(messages=request_messages, tools=tool_schemas, on_text=text_delta)
                 else:
-                    response = model.complete(messages=messages, tools=tool_schemas)
+                    response = model.complete(messages=request_messages, tools=tool_schemas)
                     text_delta(response.get("content") or "")
             except (Exception, KeyboardInterrupt) as error:
                 emit(
@@ -258,7 +265,7 @@ def run_agent_turn(
                         "event": "model_error",
                         "request_number": request_number,
                         "tool_round": tool_rounds,
-                        "error": {"type": type(error).__name__, "message": sanitize_error(error, messages)},
+                        "error": {"type": type(error).__name__, "message": sanitize_error(error, request_messages)},
                         "duration_ms": round((perf_counter() - model_started) * 1000, 3),
                     }
                 )
@@ -357,6 +364,6 @@ def run_agent_turn(
             if recorder:
                 recorder.finish_step(
                     "cancelled" if isinstance(error, KeyboardInterrupt) else "failed",
-                    error=sanitize_error(error, messages),
+                    error=sanitize_error(error, request_messages),
                 )
             raise

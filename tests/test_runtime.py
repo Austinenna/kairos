@@ -3,6 +3,7 @@ import sqlite3
 
 import pytest
 
+from kairos.context import REFERENCE_HEADER
 from kairos.pricing import Usage
 from kairos.runtime import DEFAULT_SYSTEM_PROMPT, create_runtime
 from kairos.todos import add_todo, list_todos
@@ -72,8 +73,11 @@ def test_create_runtime_injects_fake_model_and_preserves_multi_turn_history(tmp_
             "user",
             "assistant",
         ]
-        assert model.calls[1]["messages"] == [
-            {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
+        request = model.calls[1]["messages"]
+        assert request[0]["content"].startswith(DEFAULT_SYSTEM_PROMPT + "\n\n")
+        references = [message for message in request if str(message.get("content", "")).startswith(REFERENCE_HEADER)]
+        assert len(references) == 1
+        assert [message for message in request if message["role"] != "system" and message not in references] == [
             {"role": "user", "content": "第一轮问题"},
             {"role": "assistant", "content": "第一轮回答"},
             {"role": "user", "content": "继续刚才的话题"},
@@ -109,9 +113,15 @@ def test_runtime_uses_registered_todo_tool_and_keeps_tool_messages(tmp_path):
         assert result.content == "待办已创建。"
         assert result.tool_results[0].name == "add_todo"
         assert result.tool_results[0].value["title"] == "测试运行时工具"
-        assert {"add_todo", "list_todos", "update_todo", "complete_todo", "delete_todo"} == set(
-            runtime.tool_registry.handlers
-        )
+        assert {
+            "add_todo",
+            "list_todos",
+            "update_todo",
+            "complete_todo",
+            "delete_todo",
+            "remember",
+            "read_memory",
+        } == set(runtime.tool_registry.handlers)
         assert [todo["title"] for todo in list_todos(runtime.connection)] == ["测试运行时工具"]
         assert [message["role"] for message in result.messages] == [
             "system",

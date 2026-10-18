@@ -87,7 +87,8 @@ def test_cli_streams_during_respond_and_can_continue_after_interrupt(tmp_path):
                 on_text("第一轮的部分正文")
                 assert any("第一轮的部分正文" in str(item) for item in console.printed)
                 raise KeyboardInterrupt
-            assert [m["role"] for m in messages] == ["system", "user"]
+            assert [m["role"] for m in messages] == ["system", "user", "user"]
+            assert messages[1]["content"].startswith("【Kairos 全局记忆参考】")
             assert messages[-1]["content"] == "第二次"
             on_text("第二轮的完整回答")
             assert any("第二轮的完整回答" in str(item) for item in console.printed)

@@ -97,7 +97,8 @@ def test_cli_does_not_restore_or_repeat_image_turn_after_tool_side_effect(tmp_pa
                 }
             if self.calls == 2:
                 raise KeyboardInterrupt
-            assert [m["role"] for m in messages] == ["system", "user", "assistant", "tool", "user"]
+            assert [m["role"] for m in messages] == ["system", "user", "user", "assistant", "tool", "user"]
+            assert messages[1]["content"].startswith("【Kairos 全局记忆参考】")
             assert messages[-1]["content"] == "检查结果"
             return {"content": "已保留", "tool_calls": [], "finish_reason": "stop"}
 

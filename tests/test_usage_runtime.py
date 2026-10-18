@@ -7,6 +7,7 @@ import pytest
 from rich.console import Console
 
 from kairos import pricing
+from kairos.context import REFERENCE_HEADER
 from kairos.runtime import create_runtime
 from kairos.terminal_renderer import TerminalRenderer
 
@@ -48,8 +49,11 @@ def test_tool_turn_counts_all_requests_but_context_uses_latest_full_input(tmp_pa
     model = MeteredModel(FIRST, LAST)
     with create_runtime(model=model, db_path=tmp_path / "usage.sqlite3") as runtime:
         result = runtime.respond("查询待办")
-    assert model.requests[1][:2] == model.requests[0]
-    assert [message["role"] for message in model.requests[1]] == ["system", "user", "assistant", "tool"]
+    assert model.requests[1][: len(model.requests[0])] == model.requests[0]
+    assert [message["role"] for message in model.requests[1]] == ["system", "user", "user", "assistant", "tool"]
+    for request in model.requests:
+        assert sum(str(message.get("content", "")).startswith(REFERENCE_HEADER) for message in request) == 1
+    assert [message["role"] for message in result.messages] == ["system", "user", "assistant", "tool", "assistant"]
     assert result.usage.input_tokens == 13000
     assert result.usage.output_tokens == 400
     assert result.last_request_usage.input_tokens == 7000

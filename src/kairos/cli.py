@@ -122,8 +122,11 @@ def run(
 
         renderer.status(f"[bold]Kairos[/] · {_session_label(runtime)} · 输入 /help 查看命令")
         _show_recovery_notice(runtime, renderer)
+        if getattr(runtime, "memory_extractor", None) is not None:
+            renderer.status("[dim]全局记忆已启用；每轮后台提取的用量单独记录，不计入前台费用统计。[/]")
 
         while True:
+            _show_memory_events(runtime, renderer)
             try:
                 if input_editor is not None:
                     draft = input_editor.read(draft=restore_draft)
@@ -240,7 +243,43 @@ def run(
         if input_editor is not None:
             input_editor.close()
         if owns_runtime and runtime is not None:
+            if getattr(runtime, "memory_pending_count", 0):
+                renderer.status("[dim]正在完成后台记忆提取，完成后退出。[/]")
             runtime.close()
+            _show_memory_events(runtime, renderer)
+
+
+def _show_memory_events(runtime: AgentRuntime, renderer: TerminalRenderer) -> None:
+    """在主线程展示后台记忆保存结果。
+
+    作用:
+        在下一次输入和正常退出时报告实际写入或失败，不从后台线程重绘终端。
+
+    参数:
+        runtime: 提供 drain_memory_events 的运行时；兼容没有该接口的外部测试替身。
+        renderer: 当前终端的统一输出器。
+
+    返回:
+        None。
+
+    行为说明:
+        1. 无新增结果保持安静；仅展示实际更新主题数以及冲突、部分完成和失败。
+        2. 不展示完整记忆、认证配置或模型错误正文；审计保存在记忆目录的 JSONL 中。
+    """
+    drain = getattr(runtime, "drain_memory_events", None)
+    if not callable(drain):
+        return
+    for event in drain():
+        status = event.get("status")
+        if status == "completed":
+            count = len(set(event.get("topic_ids", [])))
+            renderer.status(f"[dim]后台记忆：已更新 {count} 个主题。[/]")
+        elif status == "conflict":
+            renderer.status("[yellow]后台记忆发现冲突，未覆盖原记录。[/]")
+        elif status == "partial":
+            renderer.status("[yellow]后台记忆已保存部分内容，但本轮提取未完整完成。[/]")
+        elif status == "failed":
+            renderer.status("[yellow]后台记忆提取失败；详情见 ~/.kairos/memory/extraction.jsonl。[/]")
 
 
 def _session_label(runtime: AgentRuntime) -> str:

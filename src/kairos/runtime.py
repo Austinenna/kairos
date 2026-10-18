@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
@@ -18,8 +18,12 @@ from typing import Any
 from . import config
 from .agent_loop import AgentLoopLimitError, EventLogger, Model, ToolHandler, run_agent_turn, sanitize_error
 from .config import Settings
+from .context import ContextBuilder
 from .execution import TurnRecorder
 from .images import ImageInput, redact_images, validate_image_budget
+from .memory import MemoryStore
+from .memory_extraction import ExtractionJob, MemoryExtractor
+from .memory_tools import PRIMARY_MEMORY_TOOL_SCHEMAS
 from .observability import JsonlLogger
 from .pricing import Usage
 from .providers import AnthropicMessagesModel, OpenAICompatibleModel
@@ -30,7 +34,7 @@ from .tool_schemas import TODO_TOOL_SCHEMAS
 DEFAULT_SYSTEM_PROMPT = """你是 Kairos，用户的个人助手。回答简洁直接，使用中文。
 当用户要求新增、查询、修改、完成或删除待办时，调用对应工具；工具返回结果后再用中文说明结果。
 删除会永久移除记录，只在用户明确要求删除时执行；未提供 ID 时先查询定位，目标不明确时先询问，不猜测 ID。
-没有必要操作待办时直接回答，不要为了调用工具而调用工具。"""
+不需要工具时直接回答，不要为了调用工具而调用工具。"""
 
 
 @dataclass(frozen=True)
@@ -326,6 +330,9 @@ class AgentRuntime:
         model_client: Any | None = None,
         rebuild_model: bool = False,
         owns_model_client: bool = False,
+        memory_store: MemoryStore | None = None,
+        auto_memory: bool = True,
+        extraction_model_factory: Callable[[], Model] | None = None,
     ) -> None:
         """组装运行依赖并激活新建或已有会话。
 
@@ -350,12 +357,17 @@ class AgentRuntime:
             model_client: 工厂创建适配器时使用的外部客户端，供切换模型时复用。
             rebuild_model: 是否允许恢复会话时按保存的配置重建模型适配器。
             owns_model_client: 是否由运行时负责关闭模型关联的 SDK 客户端。
+            memory_store: 可选的全局记忆存储；省略时此底层构造函数不启用记忆。
+            auto_memory: 是否为完整用户回合启动后台提取。
+            extraction_model_factory: 可选的独立提取模型工厂；注入主模型或客户端时
+                必须提供此工厂才运行后台提取，避免并发复用外部模型或意外发起网络调用。
 
         返回:
             None。初始化后的实例持有当前会话 ID、模型上下文及执行依赖。
 
         异常:
-            ValueError: 新建会话要求开启思考，但当前适配器尚未接入思考开关。
+            ValueError: 新建会话要求开启思考，但当前适配器尚未接入思考开关；
+                或工具注册表已经占用内建记忆工具名。
 
         行为说明:
             1. 保存依赖和资源归属标记，初始化回合状态及上次执行结果。
@@ -381,6 +393,23 @@ class AgentRuntime:
         self._model_client = model_client
         self._rebuild_model = rebuild_model
         self._owns_model_client = owns_model_client
+        self.memory_store = memory_store
+        self._memory_context = ContextBuilder(memory_store) if memory_store is not None else None
+        self._memory_source: dict[str, str] | None = None
+        self._memory_events: list[dict[str, Any]] = []
+        self._extraction_model_factory = extraction_model_factory
+        self.memory_extractor: MemoryExtractor | None = None
+        if memory_store is not None:
+            if {"remember", "read_memory"}.intersection(tool_registry.handlers):
+                raise ValueError("工具注册表已占用内建记忆工具名")
+            self.tool_registry = ToolRegistry(
+                handlers={
+                    **tool_registry.handlers,
+                    "remember": self._remember,
+                    "read_memory": memory_store.read_topic,
+                },
+                schemas=[*deepcopy(tool_registry.schemas), *deepcopy(PRIMARY_MEMORY_TOOL_SCHEMAS)],
+            )
         self.recovered_turns = 0
         self.thinking_state_corrected = False
         if session_info is None and thinking_enabled and not _supports_thinking(model):
@@ -393,6 +422,136 @@ class AgentRuntime:
             thinking_enabled=thinking_enabled,
         )
         self._activate_session(info, model=model, recover=session_info is not None)
+        if (
+            memory_store is not None
+            and auto_memory
+            and (extraction_model_factory is not None or (rebuild_model and model_client is None))
+        ):
+            self.memory_extractor = MemoryExtractor(memory_store)
+
+    def _remember(self, content: str) -> dict:
+        """把当前用户明确要求保存的内容交给核心记忆存储。
+
+        作用:
+            作为主 Agent 的 remember 工具，绑定真实来源并保护调用边界。
+
+        参数:
+            content: 模型从用户明确保存要求中整理出的新核心内容。
+
+        返回:
+            存储层提供的保存或重复结果（dict）。
+
+        异常:
+            RuntimeError: 没有启用记忆，或当前没有活动用户回合。
+
+        行为说明:
+            1. 只允许活动用户回合调用，不让工具参数指定来源或写入路径。
+            2. 绑定本轮用户消息 ID 后委托存储追加，语义查重由模型执行。
+        """
+        if self.memory_store is None or not self._responding or self._memory_source is None:
+            raise RuntimeError("remember 只能在启用记忆的用户回合中调用")
+        return self.memory_store.remember(content, source=self._memory_source)
+
+    @property
+    def memory_pending_count(self) -> int:
+        """返回等待或正在执行的后台记忆任务数量。
+
+        作用:
+            供 CLI 退出提示和嵌入调用方判断后台工作是否已经结束。
+
+        返回:
+            未完成任务数量（int）；未启用提取时为零。
+
+        行为说明:
+            1. 只查询提取器状态，不访问用户会话数据库。
+        """
+        return self.memory_extractor.pending_count if self.memory_extractor is not None else 0
+
+    def drain_memory_events(self) -> list[dict]:
+        """取出尚未展示的后台记忆结果。
+
+        作用:
+            让主线程安全展示后台结果，后台线程不直接操作终端。
+
+        返回:
+            完成、无新增、冲突或失败事件（list[dict]），本次取出后不重复返回。
+
+        行为说明:
+            1. 取出运行时排队故障事件及提取器已完成事件，不修改原会话历史。
+        """
+        events, self._memory_events = self._memory_events, []
+        if self.memory_extractor is not None:
+            events.extend(self.memory_extractor.drain_events())
+        return events
+
+    def wait_for_memory(self, timeout: float | None = None) -> bool:
+        """等待当前已提交的后台记忆工作结束。
+
+        作用:
+            提供正常收尾与离线测试的等待入口，不启动新的提取。
+
+        参数:
+            timeout: 最长等待秒数；None 表示等待完成。
+
+        返回:
+            是否已经全部完成（bool）；未启用提取时为 True。
+
+        行为说明:
+            1. 委托后台队列等待，任务结果仍通过 drain_memory_events 获取。
+        """
+        return self.memory_extractor is None or self.memory_extractor.wait(timeout)
+
+    def _schedule_memory(self, source: dict[str, str], current_turn_start: int) -> None:
+        """在完整用户回合结束后提交独立的记忆提取任务。
+
+        作用:
+            连接前台会话和后台提取，保留本轮边界与理解指代所需的前文。
+
+        参数:
+            source: 本轮真实用户消息来源。
+            current_turn_start: 本轮用户消息在原历史中的位置。
+
+        返回:
+            None；没有提取器时不处理。
+
+        行为说明:
+            1. 固定来源、完整会话快照和本轮模型配置，不共享主线程 SQLite 连接。
+            2. 使用注入工厂或独立创建模型，防止后台消耗主模型的流和内部状态。
+            3. 排队故障只形成后台失败事件，不将已经完成的用户回答改为失败。
+        """
+        if self.memory_extractor is None:
+            return
+        try:
+            factory = self._extraction_model_factory
+            if factory is None:
+                settings = self._model_settings.model_copy(
+                    update={"kairos_provider": _model_provider(self.model), "kairos_model": self.model_name}
+                )
+                thinking = self.thinking_enabled
+                factory = partial(build_model, settings, thinking_enabled=thinking)
+            records = self.session_store.load_messages(source["session_id"])
+            context_ids = [record.message_id for record in records if record.payload.get("role") != "system"]
+            bound_source = dict(source)
+            if context_ids:
+                bound_source.update(context_start_message_id=context_ids[0], context_end_message_id=context_ids[-1])
+            self.memory_extractor.submit(
+                ExtractionJob(
+                    source=bound_source,
+                    messages=deepcopy(self.messages),
+                    current_turn_start=current_turn_start,
+                    model_factory=factory,
+                )
+            )
+        except Exception as error:
+            self._memory_events.append(
+                {
+                    "event": "memory_extraction",
+                    "status": "failed",
+                    "source": dict(source),
+                    "error_code": type(error).__name__,
+                    "topic_ids": [],
+                }
+            )
 
     @property
     def model_name(self) -> str:
@@ -783,6 +942,8 @@ class AgentRuntime:
         self.messages.append(user_message)
         self.last_input_retained = True
         self._responding = True
+        source = {"session_id": self.session_id, "turn_id": turn.turn_id, "message_id": turn.user_message_id}
+        self._memory_source = source
         recorder = TurnRecorder(self.session_store, self.session_id, turn.turn_id, self.model_name)
         events: list[dict[str, Any]] = []
 
@@ -801,6 +962,7 @@ class AgentRuntime:
                 logger=record,
                 on_event=on_event,
                 recorder=recorder,
+                prepare_messages=self._memory_context,
             )
             self.session_store.finish_turn(turn.turn_id, "completed", "final_answer")
         except (Exception, KeyboardInterrupt) as error:
@@ -831,6 +993,7 @@ class AgentRuntime:
             raise
         finally:
             self._responding = False
+            self._memory_source = None
 
         result = AgentTurnResult(
             content=content,
@@ -845,6 +1008,7 @@ class AgentRuntime:
             last_request_usage=_last_request_usage(events),
         )
         self.last_result = result
+        self._schedule_memory(source, original_length)
         return result
 
     def reset(self, system_prompt: str | None = None) -> None:
@@ -937,7 +1101,7 @@ class AgentRuntime:
         return redact_images(self.messages)
 
     def close(self) -> None:
-        """关闭运行时持有的数据库连接和自有模型客户端。
+        """完成后台任务并关闭数据库及自有模型客户端。
 
         作用:
             在调用方结束使用运行时或退出上下文管理器时释放资源，持久会话仍保留。
@@ -949,8 +1113,8 @@ class AgentRuntime:
             None。已成功关闭的实例再次调用时直接返回。
 
         行为说明:
-            1. 尚未关闭时先检查空闲状态；仅 owns_model_client 为真时关闭模型客户端。
-            2. 无论客户端关闭是否失败，都在 finally 中尝试关闭数据库连接。
+            1. 尚未关闭时检查前台空闲状态，等待已排队的后台提取完成。
+            2. 关闭自有模型客户端，并在 finally 中关闭数据库连接。
             3. 连接关闭成功后设置 _closed；若连接关闭自身抛出异常，该标记不会更新。
                外部注入客户端通常由调用方管理，其关闭权由创建时的标记决定。
         """
@@ -958,11 +1122,15 @@ class AgentRuntime:
         if not self._closed:
             self._ensure_idle()
             try:
-                if self._owns_model_client:
-                    self._close_model_client(self.model)
+                if self.memory_extractor is not None:
+                    self.memory_extractor.close()
             finally:
-                self.connection.close()
-                self._closed = True
+                try:
+                    if self._owns_model_client:
+                        self._close_model_client(self.model)
+                finally:
+                    self.connection.close()
+                    self._closed = True
 
     @staticmethod
     def _close_model_client(model: Model) -> None:
@@ -1004,6 +1172,10 @@ def create_runtime(
     thinking_enabled: bool = False,
     session_id: str | None = None,
     resume_latest: bool = False,
+    memory_dir: str | Path | None = None,
+    memory_enabled: bool = True,
+    auto_memory: bool = True,
+    extraction_model_factory: Callable[[], Model] | None = None,
 ) -> AgentRuntime:
     """创建并返回已激活会话的完整运行时。
 
@@ -1023,6 +1195,11 @@ def create_runtime(
         thinking_enabled: 新会话的思考开关；恢复时采用保存的开关。
         session_id: 要恢复的完整会话 ID 或唯一前缀，与 resume_latest 互斥。
         resume_latest: 是否恢复最近活动的可见会话；没有历史时抛出异常。
+        memory_dir: 全局记忆目录；省略时使用 ~/.kairos/memory，测试可传临时路径。
+        memory_enabled: 是否注册记忆工具并组装记忆上下文；默认开启。
+        auto_memory: 是否启用每轮后台提取；默认开启，测试可关闭。
+        extraction_model_factory: 可选的独立提取模型工厂。应用自行创建主模型时
+            默认根据本轮配置独立创建提取模型；注入主模型或客户端时须显式提供。
 
     返回:
         已激活新会话或指定历史的 AgentRuntime；调用方使用结束后应调用 close。
@@ -1072,6 +1249,11 @@ def create_runtime(
                 raise ValueError("恢复会话需要相同协议和模型；请传入与该会话匹配的模型")
         runtime_model = model or build_model(runtime_settings, client=client, thinking_enabled=thinking_enabled)
         logger = JsonlLogger(log_path) if log_path else None
+        memory_store = (
+            MemoryStore(Path(memory_dir) if memory_dir is not None else config.get_app_dir() / "memory")
+            if memory_enabled
+            else None
+        )
         return AgentRuntime(
             model=runtime_model,
             connection=connection,
@@ -1085,6 +1267,9 @@ def create_runtime(
             model_client=client,
             rebuild_model=managed_model,
             owns_model_client=managed_model and client is None,
+            memory_store=memory_store,
+            auto_memory=auto_memory,
+            extraction_model_factory=extraction_model_factory,
         )
     except (Exception, KeyboardInterrupt):
         if runtime_model is not None and managed_model and client is None:

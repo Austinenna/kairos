@@ -9,6 +9,7 @@ from PIL import Image
 
 import kairos.runtime as runtime_module
 from kairos.config import Settings
+from kairos.context import REFERENCE_HEADER
 from kairos.images import load_image
 from kairos.providers import AnthropicMessagesModel, OpenAICompatibleModel
 from kairos.runtime import create_runtime
@@ -48,6 +49,27 @@ def image_blocks(messages):
     ]
 
 
+def conversation_messages(messages):
+    """检查请求只有一份记忆参考，并取出原始对话部分。
+
+    作用:
+        让会话恢复断言聚焦真实用户、助手和工具记录，同时验证新增记忆参考没有重复注入。
+
+    参数:
+        messages: ContextBuilder 或协议适配器处理后的模型请求消息。
+
+    返回:
+        去除 system 和单条合成记忆参考后的对话消息 (list[dict])。
+
+    行为说明:
+        1. 通过固定参考标记检查合成消息恰好一条。
+        2. 仅过滤合成参考与系统规则，不改写原始消息或跳过工具结果。
+    """
+    references = [message for message in messages if str(message.get("content", "")).startswith(REFERENCE_HEADER)]
+    assert len(references) == 1
+    return [message for message in messages if message["role"] != "system" and message not in references]
+
+
 def test_session_switching_and_restart_keep_history_and_ids_separate(tmp_path):
     database = tmp_path / "sessions.sqlite3"
     first_model = FakeModel([{"content": "A 的回答"}, {"content": "B 的回答"}, {"content": "继续 A"}])
@@ -58,8 +80,8 @@ def test_session_switching_and_restart_keep_history_and_ids_separate(tmp_path):
         session_b = runtime.new_session(title="会话 B", system_prompt="会话 B 的规则").session_id
         assert session_a != session_b
         runtime.respond("B 的问题")
-        assert first_model.requests[1] == [
-            {"role": "system", "content": "会话 B 的规则"},
+        assert first_model.requests[1][0]["content"].startswith("会话 B 的规则\n\n")
+        assert conversation_messages(first_model.requests[1]) == [
             {"role": "user", "content": "B 的问题"},
         ]
         runtime.resume_session(session_a)
@@ -76,8 +98,8 @@ def test_session_switching_and_restart_keep_history_and_ids_separate(tmp_path):
     with create_runtime(model=restored_model, db_path=database, session_id=session_b) as restored:
         assert restored.session_id == session_b
         restored.respond("B 的后续问题")
-        assert restored_model.requests[0] == [
-            {"role": "system", "content": "会话 B 的规则"},
+        assert restored_model.requests[0][0]["content"].startswith("会话 B 的规则\n\n")
+        assert conversation_messages(restored_model.requests[0]) == [
             {"role": "user", "content": "B 的问题"},
             {"role": "assistant", "content": "B 的回答"},
             {"role": "user", "content": "B 的后续问题"},
@@ -221,8 +243,15 @@ def test_anthropic_signed_block_order_is_preserved_in_restored_provider_request(
     restored_model = AnthropicMessagesModel("test-model", client=restored_client)
     with create_runtime(model=restored_model, db_path=database, session_id=session_id) as restored:
         restored.respond("继续之前的对话")
-    assert requests[0]["messages"][1] == {"role": "assistant", "content": blocks}
-    assert requests[0]["messages"][2]["content"] == [{"type": "tool_result", "tool_use_id": "query_1", "content": "[]"}]
+    restored_history = conversation_messages(requests[0]["messages"])
+    assistant = next(message for message in restored_history if message["role"] == "assistant")
+    assert assistant == {"role": "assistant", "content": blocks}
+    tool_result = next(
+        message
+        for message in restored_history
+        if isinstance(message["content"], list) and message["content"][0].get("type") == "tool_result"
+    )
+    assert tool_result["content"] == [{"type": "tool_result", "tool_use_id": "query_1", "content": "[]"}]
 
 
 @pytest.mark.parametrize("error,status", [(KeyboardInterrupt(), "cancelled"), (OSError("离线模拟错误"), "failed")])
@@ -273,8 +302,11 @@ def test_restoring_interrupted_turn_keeps_completed_tool_and_never_reexecutes_it
         assert len(list_todos(restored.connection)) == 1
         restored.respond("刚才是否已经创建")
         assert len(list_todos(restored.connection)) == 1
-        assert [message["role"] for message in followup.requests[0]] == ["system", "user", "assistant", "tool", "user"]
-        assert json.loads(followup.requests[0][3]["content"])["title"] == "只创建一次"
+        restored_history = conversation_messages(followup.requests[0])
+        assert [message["role"] for message in restored_history] == ["user", "assistant", "tool", "user"]
+        tool_result = next(message for message in restored_history if message["role"] == "tool")
+        assert json.loads(tool_result["content"])["title"] == "只创建一次"
+        assert tool_result["tool_call_id"] == "add_1"
         assert restored.session_store.inspect(session_id)["tool_calls"] == details["tool_calls"]
 
 
