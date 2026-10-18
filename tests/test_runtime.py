@@ -22,6 +22,31 @@ class FakeModel:
         return next(self.responses)
 
 
+@pytest.mark.parametrize(
+    "name, arguments",
+    [
+        ("delete_todo", {"todo_id": True}),
+        ("complete_todo", {"todo_id": 1.0}),
+        ("add_todo", {"title": "非法标签", "tags": "工作"}),
+        ("update_todo", {"todo_id": 1, "due_at": "明天下午"}),
+    ],
+)
+def test_invalid_model_arguments_return_error_without_mutating_todos(tmp_path, name, arguments):
+    model = FakeModel(
+        [
+            {"tool_calls": [{"id": "invalid", "function": {"name": name, "arguments": json.dumps(arguments)}}]},
+            {"content": "参数需要修正"},
+        ]
+    )
+    with create_runtime(model=model, db_path=tmp_path / "kairos.sqlite3") as runtime:
+        retained = add_todo(runtime.connection, "保留原记录")
+        result = runtime.respond("模拟非法工具参数")
+        assert result.tool_results[0].value["error"]["type"] == "ValueError"
+        assert list_todos(runtime.connection) == [retained]
+        assert runtime.session_details()["tool_calls"][0]["status"] == "failed"
+        assert "error" in json.loads(model.calls[1]["messages"][-1]["content"])
+
+
 def test_create_runtime_injects_fake_model_and_preserves_multi_turn_history(tmp_path):
     model = FakeModel(
         [

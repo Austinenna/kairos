@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from kairos.runtime import create_runtime
+from kairos.runtime import _database_tool, create_runtime
 
 
 class Model:
@@ -103,7 +103,7 @@ def test_reentrant_input_is_rejected_without_resetting_outer_turn_state(tmp_path
         assert len(runtime.session_details()["turns"]) == 1
 
 
-def test_database_tool_binding_error_rolls_back_before_persisting_error_result(tmp_path):
+def test_invalid_tool_arguments_are_rejected_before_sql_and_session_can_continue(tmp_path):
     response = {
         "tool_calls": [
             {
@@ -120,9 +120,28 @@ def test_database_tool_binding_error_rolls_back_before_persisting_error_result(t
         db_path=tmp_path / "session.sqlite3",
     ) as runtime:
         first = runtime.respond("尝试添加")
-        assert first.tool_results[0].value["error"]["type"] == "ProgrammingError"
+        assert first.tool_results[0].value["error"]["type"] == "ValueError"
+        assert runtime.connection.execute("SELECT COUNT(*) FROM todos").fetchone()[0] == 0
         assert not runtime.connection.in_transaction
         assert runtime.session_details()["tool_calls"][0]["status"] == "failed"
         assert runtime.respond("继续").content == "可以继续对话"
         runtime.resume_session(runtime.session_id)
         assert runtime.recovered_turns == 0
+
+
+def test_database_tool_binding_failure_rolls_back_partial_write_before_recording_result(tmp_path):
+    response = {"tool_calls": [{"id": "sql", "function": {"name": "broken_sql", "arguments": "{}"}}]}
+
+    def broken_sql(connection):
+        connection.execute("INSERT INTO todos (title, created_at, updated_at) VALUES ('应回滚', 'test', 'test')")
+        connection.execute("UPDATE todos SET due_at = ?", ({"invalid": "object"},))
+
+    with create_runtime(
+        model=Model([response, {"content": "写入失败"}]), db_path=tmp_path / "session.sqlite3"
+    ) as runtime:
+        runtime.tool_registry.handlers["broken_sql"] = lambda: _database_tool(runtime.connection, broken_sql)
+        result = runtime.respond("测试数据库工具回滚")
+        assert result.tool_results[0].value["error"]["type"] == "ProgrammingError"
+        assert runtime.connection.execute("SELECT COUNT(*) FROM todos").fetchone()[0] == 0
+        assert not runtime.connection.in_transaction
+        assert runtime.session_details()["tool_calls"][0]["status"] == "failed"

@@ -14,9 +14,9 @@ ADD_TODO_TOOL = {
             "properties": {
                 "title": {"type": "string", "description": "待办标题，不能为空。"},
                 "due_at": {
-                    "type": "string",
+                    "type": ["string", "null"],
                     "format": "date-time",
-                    "description": "截止时间，使用带时区的 ISO 8601 格式。",
+                    "description": "截止时间，使用含时分秒和时区的 ISO 8601 格式；null 表示无截止时间。",
                 },
                 "priority": {
                     "type": "integer",
@@ -28,10 +28,10 @@ ADD_TODO_TOOL = {
                     "enum": ["pending", "completed"],
                     "description": "待办状态，默认为 pending。",
                 },
-                "project": {"type": "string", "description": "所属项目，可选。"},
+                "project": {"type": ["string", "null"], "description": "所属项目，可选。"},
                 "tags": {
-                    "type": "array",
-                    "items": {"type": "string"},
+                    "type": ["array", "null"],
+                    "items": {"type": "string", "minLength": 1},
                     "description": "标签列表，可选。",
                 },
             },
@@ -74,12 +74,12 @@ UPDATE_TODO_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {
-                "todo_id": {"type": "integer", "description": "要修改的待办 ID。"},
+                "todo_id": {"type": "integer", "minimum": 1, "description": "要修改的待办 ID。"},
                 "title": {"type": "string", "description": "新的待办标题。"},
                 "due_at": {
-                    "type": "string",
+                    "type": ["string", "null"],
                     "format": "date-time",
-                    "description": "新的截止时间，使用带时区的 ISO 8601 格式。",
+                    "description": "新的截止时间，使用含时分秒和时区的 ISO 8601 格式；null 表示无截止时间。",
                 },
                 "priority": {
                     "type": "integer",
@@ -91,10 +91,10 @@ UPDATE_TODO_TOOL = {
                     "enum": ["pending", "completed"],
                     "description": "新的待办状态。",
                 },
-                "project": {"type": "string", "description": "新的所属项目。"},
+                "project": {"type": ["string", "null"], "description": "新的所属项目。"},
                 "tags": {
-                    "type": "array",
-                    "items": {"type": "string"},
+                    "type": ["array", "null"],
+                    "items": {"type": "string", "minLength": 1},
                     "description": "新的标签列表。",
                 },
             },
@@ -113,7 +113,7 @@ COMPLETE_TODO_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {
-                "todo_id": {"type": "integer", "description": "要完成的待办 ID。"},
+                "todo_id": {"type": "integer", "minimum": 1, "description": "要完成的待办 ID。"},
             },
             "required": ["todo_id"],
             "additionalProperties": False,
@@ -129,7 +129,7 @@ DELETE_TODO_TOOL = {
         "parameters": {
             "type": "object",
             "properties": {
-                "todo_id": {"type": "integer", "description": "要删除的待办 ID。"},
+                "todo_id": {"type": "integer", "minimum": 1, "description": "要删除的待办 ID。"},
             },
             "required": ["todo_id"],
             "additionalProperties": False,

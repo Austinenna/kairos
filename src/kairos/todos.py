@@ -4,6 +4,7 @@
 """
 
 import json
+import re
 import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -57,7 +58,7 @@ def _validate_title(title: str) -> str:
 
 
 def _validate_priority(priority: int) -> int:
-    if priority not in (1, 2, 3):
+    if type(priority) is not int or priority not in (1, 2, 3):
         raise ValueError("priority 必须是 1、2 或 3")
     return priority
 
@@ -71,9 +72,89 @@ def _validate_status(status: str) -> str:
 def _encode_tags(tags: Sequence[str] | None) -> str:
     if tags is None:
         return "[]"
-    if not all(isinstance(tag, str) and tag.strip() for tag in tags):
+    if (
+        not isinstance(tags, Sequence)
+        or isinstance(tags, (str, bytes, bytearray))
+        or not all(isinstance(tag, str) and tag.strip() for tag in tags)
+    ):
         raise ValueError("tags 必须是非空字符串列表")
     return json.dumps([tag.strip() for tag in tags], ensure_ascii=False)
+
+
+def _validate_todo_id(todo_id: int) -> int:
+    """校验待办 ID，阻止布尔值或字符串被 SQLite 当作整数。
+
+    作用:
+        在查询或修改目标记录前限定 ID 类型，避免非法模型参数操作其他待办。
+
+    参数:
+        todo_id: 必须是大于零的整数，不能是 bool。
+
+    返回:
+        原始合法 ID（int）。
+
+    异常:
+        ValueError: ID 不是严格的正整数。
+
+    行为说明:
+        1. 在执行 SQL 前检查，不做隐式类型转换。
+    """
+    if type(todo_id) is not int or todo_id < 1:
+        raise ValueError("todo_id 必须是正整数，不能是布尔值或字符串")
+    return todo_id
+
+
+def _validate_due_at(due_at: str | None) -> str | None:
+    """校验并规范化带明确时区的截止时间。
+
+    作用:
+        在新增或修改待办前拒绝相对日期、无时区时间和无效日期，不猜测用户时区。
+
+    参数:
+        due_at: None 表示没有截止时间；字符串须包含日期、时分秒及 Z 或 ±HH:MM 时区。
+
+    返回:
+        规范化 ISO 8601 字符串或 None，保留输入所指定的时区偏移。
+
+    异常:
+        ValueError: 输入不符合规定格式，或日期、时间字段无效。
+
+    行为说明:
+        1. 先检查类型和完整格式，再用 datetime 校验真实日期。
+        2. 所有校验均在 SQL 写入之前完成；不为相对时间补充当前日期。
+    """
+    if due_at is None:
+        return None
+    pattern = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)"
+    if not isinstance(due_at, str) or re.fullmatch(pattern, due_at, re.IGNORECASE) is None:
+        raise ValueError("due_at 必须是带时区的 ISO 8601 时间，例如 2026-10-18T15:00:00+08:00，或 null")
+    try:
+        return datetime.fromisoformat(due_at.replace("z", "Z")).isoformat()
+    except ValueError:
+        raise ValueError("due_at 的日期或时间无效") from None
+
+
+def _validate_project(project: str | None) -> str | None:
+    """校验项目字段，防止 SQLite 隐式转换非法类型。
+
+    作用:
+        在待办新增和修改的写入边界检查所属项目。
+
+    参数:
+        project: 项目字符串或 None；None 表示不关联项目。
+
+    返回:
+        原始项目值（str | None）。
+
+    异常:
+        ValueError: 项目既不是字符串也不是 None。
+
+    行为说明:
+        1. 仅校验类型，不创建项目，也不转换名称。
+    """
+    if project is not None and not isinstance(project, str):
+        raise ValueError("project 必须是字符串或 null")
+    return project
 
 
 def _decode_row(row: sqlite3.Row) -> dict[str, object]:
@@ -83,6 +164,7 @@ def _decode_row(row: sqlite3.Row) -> dict[str, object]:
 
 
 def _get_todo(connection: sqlite3.Connection, todo_id: int) -> dict[str, object]:
+    todo_id = _validate_todo_id(todo_id)
     row = connection.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
     if row is None:
         raise KeyError(f"找不到待办：{todo_id}")
@@ -104,6 +186,8 @@ def add_todo(
     priority = _validate_priority(priority)
     status = _validate_status(status)
     encoded_tags = _encode_tags(tags)
+    due_at = _validate_due_at(due_at)
+    project = _validate_project(project)
     now = _now()
     cursor = connection.execute(
         """
@@ -143,6 +227,7 @@ def list_todos(
 
 def update_todo(connection: sqlite3.Connection, todo_id: int, **changes: object) -> dict[str, object]:
     """修改一条待办中调用者明确提供的字段。"""
+    todo_id = _validate_todo_id(todo_id)
     allowed_fields = {"title", "due_at", "priority", "status", "project", "tags"}
     unknown_fields = set(changes) - allowed_fields
     if unknown_fields:
@@ -158,6 +243,10 @@ def update_todo(connection: sqlite3.Connection, todo_id: int, **changes: object)
         changes["status"] = _validate_status(changes["status"])
     if "tags" in changes:
         changes["tags"] = _encode_tags(changes["tags"])
+    if "due_at" in changes:
+        changes["due_at"] = _validate_due_at(changes["due_at"])
+    if "project" in changes:
+        changes["project"] = _validate_project(changes["project"])
 
     assignments = [f"{field} = ?" for field in changes]
     parameters = list(changes.values())

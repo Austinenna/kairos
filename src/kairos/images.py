@@ -258,6 +258,9 @@ def validate_image_budget(messages: list[dict], images: Sequence[ImageInput]) ->
 
 
 def _image_payload(value: dict) -> tuple[str | None, str | None]:
+    # 观察事件也包含 JSON Schema；其 type 可以是允许 null 的类型列表。
+    if not isinstance(value.get("type"), str):
+        return None, None
     source = value.get("source")
     if value.get("type") == "image":
         if isinstance(source, dict):
