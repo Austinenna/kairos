@@ -168,6 +168,29 @@ def build_model(
     raise ValueError(f"不支持的模型协议：{provider}")
 
 
+def _build_extraction_model(settings: Settings, *, thinking_enabled: bool = False) -> Model:
+    """创建后台独立模型，并为 DeepSeek 记忆提取启用 JSON 输出。
+
+    作用:
+        在后台模型构建边界设置输出格式，保持前台普通对话的请求参数不变。
+
+    参数:
+        settings: 当前回合的模型与认证配置快照。
+        thinking_enabled: 当前回合的思考开关，原样交给模型工厂。
+
+    返回:
+        独立的模型适配器（Model）；DeepSeek Chat Completions 启用 json_object 模式。
+
+    行为说明:
+        1. 沿用现有工厂创建模型，只对已确认支持 JSON 模式的 DeepSeek 协议组合加参。
+        2. 合并额外参数并保留 thinking；不修改前台模型、网关配置或自定义注入工厂。
+    """
+    model = build_model(settings, thinking_enabled=thinking_enabled)
+    if isinstance(model, OpenAICompatibleModel) and model.model.startswith("deepseek"):
+        model.extra_body = {**(model.extra_body or {}), "response_format": {"type": "json_object"}}
+    return model
+
+
 def _usage_from_event(event: dict[str, Any]) -> Usage | None:
     """提取一次模型响应的用量，保留未返回的字段。
 
@@ -530,7 +553,7 @@ class AgentRuntime:
 
         行为说明:
             1. 固定来源、完整会话快照和本轮模型配置，不共享主线程 SQLite 连接。
-            2. 使用注入工厂或独立创建模型，防止后台消耗主模型的流和内部状态。
+            2. 使用注入工厂或独立创建模型；默认 DeepSeek 后台启用 JSON 模式，保留思考设置。
             3. 排队故障只形成后台失败事件，不将已经完成的用户回答改为失败。
         """
         if self.memory_extractor is None:
@@ -542,7 +565,7 @@ class AgentRuntime:
                     update={"kairos_provider": _model_provider(self.model), "kairos_model": self.model_name}
                 )
                 thinking = self.thinking_enabled
-                factory = partial(build_model, settings, thinking_enabled=thinking)
+                factory = partial(_build_extraction_model, settings, thinking_enabled=thinking)
             records = self.session_store.load_messages(source["session_id"])
             context_ids = [record.message_id for record in records if record.payload.get("role") != "system"]
             bound_source = dict(source)

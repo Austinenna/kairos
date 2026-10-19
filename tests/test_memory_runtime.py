@@ -344,7 +344,11 @@ def test_managed_runtime_builds_independent_extraction_client_by_default(tmp_pat
         assert client is None
         fake = Client("前台回答" if not clients else '{"status":"no_change"}')
         clients.append(fake)
-        return OpenAICompatibleModel(model=settings.kairos_model, client=fake)
+        return OpenAICompatibleModel(
+            model=settings.kairos_model,
+            client=fake,
+            extra_body={"thinking": {"type": "enabled" if thinking_enabled else "disabled"}, "keep": True},
+        )
 
     monkeypatch.setattr(runtime_module, "build_model", build)
     settings = Settings(_env_file=None, kairos_model="deepseek-offline", gateway_base_url="https://offline.invalid")
@@ -354,6 +358,12 @@ def test_managed_runtime_builds_independent_extraction_client_by_default(tmp_pat
         assert runtime.wait_for_memory(3)
         assert runtime.drain_memory_events()[0]["status"] == "no_change"
         assert len(clients) == 2 and clients[1].closed and not clients[0].closed
+        assert clients[0].requests[0]["extra_body"] == {"thinking": {"type": "disabled"}, "keep": True}
+        assert clients[1].requests[0]["extra_body"] == {
+            "thinking": {"type": "disabled"},
+            "keep": True,
+            "response_format": {"type": "json_object"},
+        }
         assert {t["function"]["name"] for t in clients[1].requests[0]["tools"]} == {
             "read_memory",
             "write_topic",
