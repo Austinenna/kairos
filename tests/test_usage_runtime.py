@@ -41,7 +41,7 @@ def render(result, monkeypatch):
     monkeypatch.setitem(pricing.PRICES, "usage-test", {"peak": (1, 2, 3), "off_peak": (1, 2, 3)})
     output = StringIO()
     renderer = TerminalRenderer(Console(file=output, width=220, color_system=None))
-    cost = renderer.render_turn(result, model="usage-test", total_cost=0)
+    cost = renderer.render_turn(result, model="usage-test")
     return output.getvalue(), cost
 
 
@@ -59,8 +59,12 @@ def test_tool_turn_counts_all_requests_but_context_uses_latest_full_input(tmp_pa
     assert result.last_request_usage.input_tokens == 7000
     assert result.last_request_usage.output_tokens == 300
     text, cost = render(result, monkeypatch)
-    assert "累计输入 13,000" in text
-    assert "最近请求输入 7,000 / 10,000（70.00%，不含新输出）" in text
+    context_line, turn_line = text.splitlines()[-2:]
+    assert context_line == "上下文窗口 7,000 / 10,000（70.00%）"
+    assert turn_line.startswith("本轮输入 13,000")
+    assert "输出 400" in turn_line
+    assert "本轮费用 $0.02720" in turn_line
+    assert "累计" not in text
     assert "130.00%" not in text
     assert cost == pytest.approx((13000 * 2 + 400 * 3) / 1_000_000)
 
@@ -77,10 +81,10 @@ def test_missing_usage_does_not_become_zero_or_stale_context(tmp_path, monkeypat
         assert result.last_request_usage.input_tokens == 7000
     text, _ = render(result, monkeypatch)
     assert "本轮费用未估算" in text
-    assert "已估算累计" in text
-    assert "累计输入 0" not in text
+    assert "累计" not in text
+    assert "本轮输入 0" not in text
     if missing != "first":
-        assert "最近请求输入未知" in text
+        assert "上下文窗口 未知" in text
         assert "%" not in text
 
 
@@ -94,8 +98,8 @@ def test_invalid_or_missing_input_count_is_unknown_without_breaking_completed_tu
     assert result.usage.output_tokens == 400
     assert result.last_request_usage.input_tokens is None
     text, _ = render(result, monkeypatch)
-    assert "累计输入 未知" in text
-    assert "最近请求输入未知" in text
+    assert "本轮输入 未知" in text
+    assert "上下文窗口 未知" in text
     assert "本轮费用未估算" in text
 
 

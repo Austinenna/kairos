@@ -200,10 +200,24 @@ class TerminalRenderer:
     def history(self, messages: list[dict]) -> None:
         self.console.print_json(data=redact_images(messages))
 
-    def render_turn(
-        self, result: AgentTurnResult, *, model: str, total_cost: float, content_streamed: bool = False
-    ) -> float:
-        """渲染一次 Agent 回合，返回本轮费用供 CLI 累加。"""
+    def render_turn(self, result: AgentTurnResult, *, model: str, content_streamed: bool = False) -> float:
+        """渲染一次 Agent 回合并返回本轮费用。
+
+        作用:
+            展示回答、截断提示和用量统计，不维护跨回合累计费用。
+
+        参数:
+            result: 运行时返回的完整回合结果。
+            model: 用于查询价格和上下文窗口的模型名称。
+            content_streamed: 正文是否已经流式显示，为真时不重复打印。
+
+        返回:
+            本轮估算费用（float，美元）；无法估算时返回 0.0，界面仍显示未知。
+
+        行为说明:
+            1. 按需展示正文和输出截断提示。
+            2. 根据本轮用量估算费用，分别展示上下文窗口和本轮消耗。
+        """
 
         if not content_streamed:
             self.render_content(result.content)
@@ -215,7 +229,6 @@ class TerminalRenderer:
             model,
             result.usage,
             cost,
-            total_cost + (cost or 0.0),
             last_request_usage=result.last_request_usage,
         )
         return cost or 0.0
@@ -254,11 +267,10 @@ class TerminalRenderer:
         model: str,
         usage: Usage | None,
         cost: float | None,
-        total_cost: float,
         *,
         last_request_usage: Usage | None = None,
     ) -> None:
-        """分别展示本轮累计消耗与最近请求的完整输入占比。
+        """分行展示上下文窗口和本轮用量、费用。
 
         作用:
             将运行时用量投影为终端文字，避免累计输入被误认为单次上下文长度。
@@ -267,18 +279,28 @@ class TerminalRenderer:
             model: 用于查询上下文窗口的模型名称。
             usage: 本轮累计用量，缺失字段为 None。
             cost: 本轮估算费用，未知时为 None。
-            total_cost: 已成功估算的费用累计，可能不包含缺少用量的回合。
             last_request_usage: 最后一次请求的用量，其输入已包含那次发送的全部历史。
 
         返回:
             无返回值（None）；向终端打印统计文字。
 
         行为说明:
-            1. 未知值明确显示未知，不按零计费；费用与上下文占比分别使用不同数据。
-            2. 最近输入占比不包含该请求随后产生的输出，也不表示下一请求剩余预算。
+            1. 上下文窗口单独一行，按最后一次请求的完整输入计算占比，不含新输出。
+            2. 本轮输入、输出与费用放在同一行；未知值不按零计费，不展示累计费用。
         """
+        window = CONTEXT_WINDOW.get(model)
+        latest_input = last_request_usage.input_tokens if last_request_usage is not None else None
+        if latest_input is None:
+            context = "上下文窗口 未知"
+        elif window:
+            context = f"上下文窗口 {latest_input:,} / {window:,}（{latest_input / window:.2%}）"
+        else:
+            context = f"上下文窗口 {latest_input:,}（上限未知）"
+        self.status(f"[dim]{context}[/]")
+
+        parts = []
         if usage is None:
-            self.status("[dim]（这一轮没有拿到用量数据）[/]")
+            parts.append("本轮用量未知")
         else:
             counts = {
                 name: f"{value:,}" if value is not None else "未知"
@@ -289,23 +311,12 @@ class TerminalRenderer:
                     ("reasoning", usage.reasoning_tokens),
                 )
             }
-            self.status(
-                f"[dim]本轮累计输入 {counts['input']}（缓存命中 {counts['cached']}）"
-                f" · 输出 {counts['output']}（思考 {counts['reasoning']}）[/]"
+            parts.append(
+                f"本轮输入 {counts['input']}（缓存命中 {counts['cached']}）"
+                f" · 输出 {counts['output']}（思考 {counts['reasoning']}）"
             )
-
-        parts = []
-        window = CONTEXT_WINDOW.get(model)
-        latest_input = last_request_usage.input_tokens if last_request_usage is not None else None
-        if latest_input is None:
-            parts.append("最近请求输入未知")
-        elif window:
-            parts.append(f"最近请求输入 {latest_input:,} / {window:,}（{latest_input / window:.2%}，不含新输出）")
-        else:
-            parts.append(f"最近请求输入 {latest_input:,}（窗口未知，不含新输出）")
         if cost is not None:
-            parts.append(f"本轮 ${cost:.5f}" + (" · 高峰价" if is_peak() else ""))
+            parts.append(f"本轮费用 ${cost:.5f}" + (" · 高峰价" if is_peak() else ""))
         else:
             parts.append("本轮费用未估算")
-        parts.append(f"已估算累计 ${total_cost:.4f}")
         self.status("[dim]" + " · ".join(parts) + "[/]")

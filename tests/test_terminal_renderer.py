@@ -32,7 +32,7 @@ def test_renderer_formats_markdown_table_once():
         tool_results=[],
     )
 
-    renderer.render_turn(result, model="unknown-model", total_cost=0.0)
+    renderer.render_turn(result, model="unknown-model")
 
     text = output.getvalue()
     assert "学习 Agent" in text
@@ -57,7 +57,7 @@ flowchart TD
         tool_results=[],
     )
 
-    renderer.render_turn(result, model="unknown-model", total_cost=0.0)
+    renderer.render_turn(result, model="unknown-model")
 
     text = output.getvalue()
     assert "Mermaid" in text
@@ -79,7 +79,7 @@ def test_pipe_output_is_immediate_ignores_tools_and_never_duplicates_final_answe
         renderer.handle_event({"event": "text_delta", "text": "已经完成。"})
         renderer.handle_event({"event": "model_response"})
     result = AgentTurnResult("已经完成。", [], None, "stop", [], [])
-    renderer.render_turn(result, model="test", total_cost=0, content_streamed=True)
+    renderer.render_turn(result, model="test", content_streamed=True)
     rendered = output.getvalue()
     assert rendered.startswith("先查一下。\n已经完成。\n")
     assert rendered.count("已经完成。") == 1

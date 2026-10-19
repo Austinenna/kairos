@@ -82,7 +82,6 @@ def run(
     console = console or Console()
     renderer = TerminalRenderer(console)
     owns_runtime = runtime is None
-    total_cost = 0.0
     restore_draft: InputDraft | None = None
     try:
         try:
@@ -228,9 +227,7 @@ def run(
                 message = escape(str(redact_images(str(e))))
                 renderer.error(f"\n[red]本轮执行失败：{type(e).__name__}: {message}[/]")
             else:
-                total_cost += renderer.render_turn(
-                    result, model=runtime.model_name, total_cost=total_cost, content_streamed=True
-                )
+                renderer.render_turn(result, model=runtime.model_name, content_streamed=True)
                 continue
 
             if input_editor is not None:
