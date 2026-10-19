@@ -6,7 +6,7 @@ import pytest
 from kairos.context import REFERENCE_HEADER
 from kairos.pricing import Usage
 from kairos.runtime import DEFAULT_SYSTEM_PROMPT, create_runtime
-from kairos.todos import add_todo, list_todos
+from kairos_todo import add_todo, list_todos
 
 
 class FakeModel:

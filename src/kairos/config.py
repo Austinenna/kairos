@@ -27,7 +27,9 @@ def get_app_dir() -> Path:
     return Path.home() / ".kairos"
 
 
-class Settings(BaseSettings):
+class ToolSettings(BaseSettings):
+    """读取可选工具配置，不要求模型或认证字段。"""
+
     model_config = SettingsConfigDict(
         env_file_encoding="utf-8",
         extra="ignore",
@@ -55,6 +57,13 @@ class Settings(BaseSettings):
         if "_env_file" not in values:
             values["_env_file"] = get_app_dir() / ".env"
         super().__init__(**values)
+
+    # 本地工具模块的加载配置；设为 [] 可独立运行 Kairos 核心。
+    kairos_tool_factories: list[str] = Field(default_factory=lambda: ["kairos_todo.tools:build_tools"])
+
+
+class Settings(ToolSettings):
+    """在可选工具配置之外读取模型与认证配置。"""
 
     # 字段名不区分大小写地对应环境变量，例如 kairos_provider <- KAIROS_PROVIDER。
     kairos_provider: Literal["openai", "anthropic"] = "openai"

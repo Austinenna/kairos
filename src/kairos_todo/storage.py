@@ -1,6 +1,8 @@
-"""SQLite 待办表的结构和初始化。
+"""独立的 SQLite 待办业务与存储。
 
 这个模块负责待办数据表，以及最基本的新增、查询、修改、完成和删除操作。
+所有业务函数接收由调用方持有的 sqlite3.Connection，要求 row_factory 为 sqlite3.Row。
+本包只创建待办表及其索引，不读取 Kairos 配置，也不管理会话或记忆数据。
 """
 
 import json
@@ -30,10 +32,10 @@ CREATE INDEX IF NOT EXISTS idx_todos_due_at ON todos(due_at);
 
 
 def initialize_database(db_path: str | Path) -> sqlite3.Connection:
-    """初始化用户数据库并返回连接。
+    """初始化独立待办数据库并返回连接。
 
     作用:
-        为运行时创建数据目录和待办表；会话及其他存储继续复用此连接。
+        为直接使用本包的调用方创建数据目录和待办表；调用方负责关闭返回的连接。
 
     参数:
         db_path: 数据库文件路径；支持用户目录缩写和测试传入的临时路径。
@@ -54,9 +56,36 @@ def initialize_database(db_path: str | Path) -> sqlite3.Connection:
     if not existed:
         path.chmod(0o600)
     connection.row_factory = sqlite3.Row
+    initialize_schema(connection)
+    return connection
+
+
+def initialize_schema(connection: sqlite3.Connection) -> None:
+    """在已有数据库连接中初始化待办表及其索引。
+
+    作用:
+        支持宿主注入数据库连接，只建立本包负责的待办结构，不接管其他业务数据。
+
+    参数:
+        connection: 无活跃事务的 SQLite 连接；调用方须先设置 row_factory 为 sqlite3.Row。
+
+    返回:
+        无返回值（None）。
+
+    异常:
+        ValueError: 连接存在活跃事务，或 row_factory 不是 sqlite3.Row。
+
+    行为说明:
+        1. 先检查事务和行工厂，拒绝在初始化时隐式提交调用方尚未完成的事务。
+        2. 幂等建立 todos 表及其索引；不修改连接配置，不关闭连接。
+        3. AUTOINCREMENT 使用的 sqlite_sequence 是 SQLite 自身维护的系统表。
+    """
+    if connection.in_transaction:
+        raise ValueError("初始化待办表前必须结束当前事务")
+    if connection.row_factory is not sqlite3.Row:
+        raise ValueError("待办数据库连接的 row_factory 必须是 sqlite3.Row")
     connection.executescript(TODO_SCHEMA)
     connection.commit()
-    return connection
 
 
 def _now() -> str:

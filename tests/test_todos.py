@@ -2,7 +2,7 @@ from contextlib import closing
 
 import pytest
 
-from kairos.todos import add_todo, complete_todo, delete_todo, initialize_database, list_todos, update_todo
+from kairos_todo import add_todo, complete_todo, delete_todo, initialize_database, list_todos, update_todo
 
 
 @pytest.mark.parametrize("status", ["pending", "completed"])

@@ -16,9 +16,10 @@ from pathlib import Path
 from typing import Any
 
 from . import config
-from .agent_loop import AgentLoopLimitError, EventLogger, Model, ToolHandler, run_agent_turn, sanitize_error
-from .config import Settings
+from .agent_loop import AgentLoopLimitError, EventLogger, Model, run_agent_turn, sanitize_error
+from .config import Settings, ToolSettings
 from .context import ContextBuilder
+from .database import open_database
 from .execution import TurnRecorder
 from .history import HistoryReader
 from .history_tools import HISTORY_TOOL_SCHEMAS
@@ -30,22 +31,12 @@ from .observability import JsonlLogger
 from .pricing import Usage, usage_from_normalized
 from .providers import AnthropicMessagesModel, OpenAICompatibleModel
 from .sessions import SessionInfo, SessionStore
-from .todos import add_todo, complete_todo, delete_todo, initialize_database, list_todos, update_todo
-from .tool_schemas import TODO_TOOL_SCHEMAS
+from .tools import ToolRegistry, load_tool_registry, prepare_tool_messages
 from .usage_stats import SessionUsage, summarize_usage
 
 DEFAULT_SYSTEM_PROMPT = """你是 Kairos，用户的个人助手。回答简洁直接，使用中文。
-当用户要求新增、查询、修改、完成或删除待办时，调用对应工具；工具返回结果后再用中文说明结果。
-删除会永久移除记录，只在用户明确要求删除时执行；未提供 ID 时先查询定位，目标不明确时先询问，不猜测 ID。
+需要执行操作时，根据当前可用能力调用对应工具；工具返回结果后再用中文说明结果。
 不需要工具时直接回答，不要为了调用工具而调用工具。"""
-
-
-@dataclass(frozen=True)
-class ToolRegistry:
-    """模型可见的工具定义和实际执行函数。"""
-
-    handlers: dict[str, ToolHandler]
-    schemas: list[dict]
 
 
 @dataclass(frozen=True)
@@ -74,51 +65,6 @@ class AgentTurnResult:
     step_ids: tuple[str, ...] = ()
     last_request_usage: Usage | None = None
     session_usage: SessionUsage | None = None
-
-
-def build_tool_handlers(connection: Any) -> dict[str, ToolHandler]:
-    """把数据库连接绑定到待办工具函数。"""
-
-    return {
-        "add_todo": partial(_database_tool, connection, add_todo),
-        "list_todos": partial(_database_tool, connection, list_todos),
-        "update_todo": partial(_database_tool, connection, update_todo),
-        "complete_todo": partial(_database_tool, connection, complete_todo),
-        "delete_todo": partial(_database_tool, connection, delete_todo),
-    }
-
-
-def _database_tool(connection: Any, handler: ToolHandler, **arguments: Any) -> object:
-    """为数据库工具调用提供提交或回滚边界。
-
-    作用:
-        作为已注册数据库工具的包装器，接收 Agent 循环提供的参数并执行工具。
-        工具异常时回滚尚未提交的事务，便于会话存储随后独立保存错误结果。
-
-    参数:
-        connection: 支持上下文管理的数据库连接，作为第一个参数传给工具。
-        handler: 实际执行数据库操作的工具函数。
-        arguments: 工具的关键字参数，原样转交 handler。
-
-    返回:
-        handler 的原始返回值；本函数不转换工具结果。
-
-    行为说明:
-        1. 进入连接的上下文，在其中调用 handler(connection, **arguments)。
-        2. 正常退出时提交尚未提交的事务；异常退出时回滚尚未提交的事务。
-        3. 此边界不撤销工具自行提前提交的写入，也不处理数据库以外的副作用。
-    """
-
-    # SQL 参数绑定等错误也可能已经打开事务。工具负责回滚自己的写入，
-    # 会话存储才能独立保存错误结果，不能把遗留事务顺带提交。
-    with connection:
-        return handler(connection, **arguments)
-
-
-def build_tool_registry(connection: Any) -> ToolRegistry:
-    """创建当前应用使用的待办工具注册表。"""
-
-    return ToolRegistry(handlers=build_tool_handlers(connection), schemas=list(TODO_TOOL_SCHEMAS))
 
 
 def _anthropic_base_url(settings: Settings) -> str | None:
@@ -431,6 +377,7 @@ class AgentRuntime:
                     "read_memory": memory_store.read_topic,
                 },
                 schemas=[*deepcopy(tool_registry.schemas), *deepcopy(PRIMARY_MEMORY_TOOL_SCHEMAS)],
+                instructions=tool_registry.instructions,
             )
         self.recovered_turns = 0
         self.thinking_state_corrected = False
@@ -451,6 +398,7 @@ class AgentRuntime:
                 "read_session": self.history_reader.read_session,
             },
             schemas=[*deepcopy(self.tool_registry.schemas), *deepcopy(HISTORY_TOOL_SCHEMAS)],
+            instructions=self.tool_registry.instructions,
         )
         info = session_info or self.session_store.create_session(
             system_prompt,
@@ -465,6 +413,25 @@ class AgentRuntime:
             and (extraction_model_factory is not None or (rebuild_model and model_client is None))
         ):
             self.memory_extractor = MemoryExtractor(memory_store)
+
+    def _prepare_messages(self, messages: list[dict]) -> list[dict]:
+        """组装每次模型请求的记忆参考和当前工具能力。
+
+        作用:
+            为新请求和工具续轮生成视图，使旧会话也使用当前加载的工具规则。
+
+        参数:
+            messages: 当前会话的原始模型消息列表。
+
+        返回:
+            独立的请求消息列表 (list[dict])，不会改写原始历史。
+
+        行为说明:
+            1. 记忆启用时先生成记忆视图，未启用时直接使用原始消息作为输入。
+            2. 始终补充当前工具能力；业务模块卸载后，其请求期规则不再加入。
+        """
+        request = self._memory_context(messages) if self._memory_context is not None else messages
+        return prepare_tool_messages(request, self.tool_registry)
 
     def _remember(self, content: str) -> dict:
         """把当前用户明确要求保存的内容交给核心记忆存储。
@@ -1019,7 +986,7 @@ class AgentRuntime:
                 logger=record,
                 on_event=on_event,
                 recorder=recorder,
-                prepare_messages=self._memory_context,
+                prepare_messages=self._prepare_messages,
             )
             self.session_store.finish_turn(turn.turn_id, "completed", "final_answer")
         except (Exception, KeyboardInterrupt) as error:
@@ -1234,6 +1201,7 @@ def create_runtime(
     memory_enabled: bool = True,
     auto_memory: bool = True,
     extraction_model_factory: Callable[[], Model] | None = None,
+    tool_factories: Sequence[str] | None = None,
 ) -> AgentRuntime:
     """创建并返回已激活会话的完整运行时。
 
@@ -1258,6 +1226,8 @@ def create_runtime(
         auto_memory: 是否启用每轮后台提取；默认开启，测试可关闭。
         extraction_model_factory: 可选的独立提取模型工厂。应用自行创建主模型时
             默认根据本轮配置独立创建提取模型；注入主模型或客户端时须显式提供。
+        tool_factories: 本地工具工厂路径；None 读取配置，空序列关闭可选业务工具，
+            非空序列显式替换配置。记忆与历史工具仍由其原有入口管理。
 
     返回:
         已激活新会话或指定历史的 AgentRuntime；调用方使用结束后应调用 close。
@@ -1287,9 +1257,12 @@ def create_runtime(
     if managed_model:
         settings = settings or Settings()
     database_path = db_path if db_path is not None else config.get_app_dir() / "kairos.sqlite3"
-    connection = initialize_database(database_path)
+    connection = open_database(database_path)
     runtime_model = None
     try:
+        if tool_factories is None:
+            tool_factories = (settings if settings is not None else ToolSettings()).kairos_tool_factories
+        registry = load_tool_registry(connection, tool_factories)
         store = SessionStore(connection)
         info = store.get_session(session_id) if session_id is not None else None
         if resume_latest:
@@ -1315,7 +1288,7 @@ def create_runtime(
         return AgentRuntime(
             model=runtime_model,
             connection=connection,
-            tool_registry=build_tool_registry(connection),
+            tool_registry=registry,
             system_prompt=system_prompt,
             logger=logger,
             thinking_enabled=thinking_enabled,

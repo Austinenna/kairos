@@ -23,7 +23,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 2. 创建 `~/.kairos/`，复制 `.env.example` 为 `~/.kairos/.env`，设置 `KAIROS_PROVIDER`、`KAIROS_MODEL`、通用的 `KAIROS_API_KEY` 和 `GATEWAY_BASE_URL`；`KAIROS_MODEL` 与 `GATEWAY_BASE_URL` 没有代码默认值，选择 `anthropic` 时，在需要时再设置不含 `/v1` 的 `ANTHROPIC_BASE_URL`。
 3. 在项目根目录运行 `uv run kairos` 新建会话，`uv run kairos --continue` 恢复最近会话，或 `uv run kairos --session ID` 恢复指定会话；后两个参数互斥。进入后使用 `/sessions`、`/resume ID` 切换，`/new [标题]` 新建，`/rename 标题` 改名。`/reset` 和 `/system 文本` 保留旧会话并开启新会话。
 4. 运行 `uv run pytest -q` 和 `uv run ruff check .` 做基础检查；流式离线测试不消耗 API 额度。
-5. 使用 VS Code 的 `Kairos CLI` 配置进入主程序，在 `cli.py`、`terminal_renderer.py`、`runtime.py`、`agent_loop.py` 和 `todos.py` 的边界设置断点。
+5. 使用 VS Code 的 `Kairos CLI` 配置进入主程序，在 `cli.py`、`terminal_renderer.py`、`runtime.py`、`agent_loop.py` 和 `kairos_todo/storage.py` 的边界设置断点。
 
 真实密钥及本地会话、待办数据库不提交 Git。会话正文和已发送图片会持久保存到本地 `~/.kairos/kairos.sqlite3`，密钥和 endpoint 仍从当前配置读取。流式改造最初使用模拟数据验收；图片接入阶段追加的真实网关测试仅发送合成图片，并使用临时待办数据库。
 
@@ -174,3 +174,14 @@ SQLite 与 runtime.messages：保存原始消息和工具结果
 已增加独立脚本 `scripts/weixin_probe.py`，以当前官方 iLink 协议验证扫码、本人私聊测试口令、固定回复和重启恢复。它不导入 Runtime，不读取模型配置、业务数据库或记忆；私有状态在 `~/.kairos/weixin-probe/`。每次运行只发送一条固定回复，发送结果未知时不自动重发。
 
 39 项隔离测试、Ruff、格式与差异检查通过。探针支持二维码登录、文字收发和重启恢复验证。本阶段不等于已完成正式渠道层。
+
+
+## 待办模块独立与可选加载 2026-10-19
+
+第一步已实现：待办业务、表结构、五个工具及专用规则位于 `src/kairos_todo/`，只依赖标准库；核心 `runtime.py` 不再导入待办函数或定义待办提示词。`database.py` 负责通用连接，`tools.py` 按本地工厂契约加载配置，模块返回普通字典，不依赖核心类型。
+
+默认 `KAIROS_TOOL_FACTORIES=["kairos_todo.tools:build_tools"]` 保持已有使用方式；设置为 `[]` 并重启即可停用，随后可以移走待办包。代码可传 `create_runtime(tool_factories=())`，省略时沿用配置。禁用不创建待办表，也不删除原记录；会话、记忆、历史查询仍使用原有入口。移走包前须取消其加载配置，显式引用缺失模块会报错。原 `kairos.todos` 导入改为 `kairos_todo`。
+
+当前仍同进程、默认仍使用原数据库和连接，不迁移实际数据。每次模型请求动态加入当前工具及模块规则，原始 system 和工具历史不变，旧会话不会恢复已卸载能力。MCP 客户端、stdio 服务入口、独立常驻部署均属于第二步或以后，本轮未实现。
+
+验证：613 项核心离线测试通过（排除独立微信探针），Ruff、格式与差异检查通过；独立子进程仅保留核心包且阻断待办导入仍可对话，独立待办包在仅标准库的解释器中完成 CRUD。wheel 离线构建成功，解包后验证两个包及默认工具链可用。未访问真实模型或个人业务数据，未做真实终端验收。细节见 README“可选待办模块”和学习日志。

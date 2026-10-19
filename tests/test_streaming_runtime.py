@@ -9,7 +9,7 @@ from openai import OpenAI
 
 from kairos.providers import OpenAICompatibleModel
 from kairos.runtime import create_runtime
-from kairos.todos import list_todos
+from kairos_todo import list_todos
 
 
 class SSEBody(httpx2.SyncByteStream):

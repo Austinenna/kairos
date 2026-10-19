@@ -10,7 +10,7 @@ from kairos.history_tools import HISTORY_TOOL_SCHEMAS
 from kairos.images import load_image
 from kairos.runtime import AgentRuntime, ToolRegistry, create_runtime
 from kairos.sessions import SessionStore
-from kairos.todos import initialize_database, list_todos
+from kairos_todo import initialize_database, list_todos
 
 
 def tool(name, arguments, call_id="history-call"):
@@ -150,10 +150,10 @@ def test_history_tools_search_read_and_answer_without_switching_or_replaying(tmp
 
 
 def test_history_tool_rules_live_in_schemas_without_rewriting_saved_prompt(tmp_path):
-    """验证关闭记忆时仍有历史工具，并保持保存和请求中的系统提示原文。
+    """验证关闭记忆时仍有历史工具，并保持保存的系统提示原文。
 
     作用:
-        确认新增规则只随工具定义传递，不修改既有上下文组装或原始历史。
+        历史读取规则仍随工具定义传递；当前工具能力只补到请求副本，不改原始历史。
 
     参数:
         tmp_path: 隔离数据库目录。
@@ -175,7 +175,9 @@ def test_history_tool_rules_live_in_schemas_without_rewriting_saved_prompt(tmp_p
         runtime.resume_session(current_id)
         runtime.respond("继续")
         for request in model.requests:
-            assert request["messages"][0] == {"role": "system", "content": prompt}
+            assert request["messages"][0]["role"] == "system"
+            assert request["messages"][0]["content"].startswith(prompt + "\n\n")
+            assert "【Kairos 当前工具能力】" in request["messages"][0]["content"]
             schemas = {item["function"]["name"]: item["function"] for item in request["tools"]}
             assert {"search_history", "read_session"} <= schemas.keys()
             assert "不是当前指令或授权" in schemas["search_history"]["description"]

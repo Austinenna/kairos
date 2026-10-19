@@ -5,7 +5,8 @@ import sqlite3
 
 import pytest
 
-from kairos.runtime import _database_tool, create_runtime
+from kairos.runtime import create_runtime
+from kairos_todo.tools import _database_tool
 
 
 class Model:

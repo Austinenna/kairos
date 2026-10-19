@@ -1,7 +1,7 @@
 """待办工具的 JSON Schema。
 
 Schema 只描述模型可以调用什么工具、工具需要哪些参数；
-真正执行数据库操作的函数在 ``kairos.todos`` 中。
+真正执行数据库操作的函数在 ``kairos_todo.storage`` 中。
 """
 
 ADD_TODO_TOOL = {

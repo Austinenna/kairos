@@ -29,10 +29,11 @@ kairos 主入口
   -> run_agent_turn()           模型请求、工具执行和跨轮循环
   -> providers/                 OpenAI 兼容或 Anthropic Messages 适配器
   -> sessions.py + SQLite       会话、回合、步骤、消息和工具调用记录
-  -> todos.py + SQLite          待办工具和持久化数据
+  -> tools.py                   按配置加载可选业务工具
+       -> kairos_todo/ + SQLite 当前默认启用的独立待办包
 ```
 
-`src/kairos/runtime.py` 是应用的组装和协调边界：它根据 `Settings` 创建模型适配器，初始化 SQLite、会话存储和待办工具注册表，加载当前会话的模型上下文，并把一次用户输入交给 Agent loop。`sessions.py` 持久保存完整消息及 ID 关联，`execution.py` 在模型和工具的执行边界记录步骤。`src/kairos/cli.py` 只负责终端输入和命令，`src/kairos/terminal_renderer.py` 负责把结构化结果渲染为终端内容。
+`src/kairos/runtime.py` 是应用的组装和协调边界：它根据 `Settings` 创建模型适配器，通过 `database.py` 打开 SQLite，通过 `tools.py` 加载配置指定的工具工厂，再组装会话存储、上下文与 Agent loop。核心不导入待办包，也不包含待办表结构或专用提示词。`sessions.py` 持久保存完整消息及 ID 关联，`execution.py` 在模型和工具的执行边界记录步骤。`src/kairos/cli.py` 只负责终端输入和命令，`src/kairos/terminal_renderer.py` 负责把结构化结果渲染为终端内容。
 
 交互输入由 `terminal_input.py` 的 prompt_toolkit 编辑器负责；提交后交给现有 Rich 流式输出。`clipboard.py` 封装 macOS 原生剪贴板读取，`images.py` 负责图片校验、处理、快照和摘要。普通管道和功能受限的终端保留文字输入。
 
@@ -178,6 +179,25 @@ ANTHROPIC_BASE_URL=https://gateway.example
 待办支持新增、查询、修改、完成和删除，可直接输入“删除 ID 为 3 的待办”或“删除买牛奶这条待办”。删除工具按 ID 永久移除记录，未完成和已完成的待办均可删除；找不到 ID 时返回错误。助手收到标题描述时先查询定位，目标不明确时先询问。
 
 待办函数在执行 SQL 前校验参数：ID 为严格正整数，优先级为整数 1～3，标签为非空字符串列表，截止时间为含时分秒与时区的 ISO 8601 时间（如 `2026-10-18T15:00:00+08:00`）。布尔值、错误字段类型、相对日期与无效日期会作为工具错误回传，不修改待办。`due_at`、`project` 可用 `null` 清空，标签可用空列表清空；已有历史数据不自动改写。
+
+### 可选待办模块
+
+待办业务、SQLite 表结构、工具定义和专用规则位于独立的 `src/kairos_todo/`，该包只依赖 Python 标准库。当前随 Kairos 一起打包，但核心通过配置加载它；没有待办包时也可独立运行核心。
+
+在 `~/.kairos/.env` 或环境变量中设置 JSON 数组：
+
+```dotenv
+# 默认值：继续使用现有本地待办
+KAIROS_TOOL_FACTORIES=["kairos_todo.tools:build_tools"]
+# 若要停用并移走待办包，将上一行改为：
+# KAIROS_TOOL_FACTORIES=[]
+```
+
+配置指定本地可信 Python 工厂，格式为 `module:callable`。工厂接收当前 SQLite 连接，返回普通字典：`handlers` 是名称到执行函数的映射，`schemas` 是一一对应的工具定义列表，`instructions` 是可选的字符串序列。模块自行初始化其业务表；核心不检查或创建待办表。配置引用不存在的模块或工厂执行失败时，启动明确报错，不静默跳过。修改配置后重启生效。
+
+代码调用可用 `create_runtime(tool_factories=())` 关闭可选业务模块，或传入工厂路径列表覆盖配置；省略时读取配置。记忆和历史查询仍保留各自原有入口。每次请求只在副本中加入当前工具能力及已加载模块的规则，恢复旧会话也不会把旧工具当成当前能力；原始会话记录不改写。
+
+第一步仍是同进程直接调用，默认待办继续使用原有数据库、表结构及数据，不进行迁移。停用不会删除已有待办；重新启用后仍可查询。原 `kairos.todos` 导入改为 `kairos_todo`。本地模块可在独立 Python 程序中使用 `initialize_database(path)` 和五个业务函数；MCP 客户端、MCP 服务入口与独立数据库部署属于下一步，本轮未实现。
 
 ## 当前验证基线
 

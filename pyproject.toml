@@ -22,6 +22,9 @@ kairos = "kairos:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/kairos", "src/kairos_todo"]
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
