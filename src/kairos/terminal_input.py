@@ -15,9 +15,11 @@ from urllib.parse import unquote, urlparse
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.document import Document
+from prompt_toolkit.filters import Condition, is_done, renderer_height_is_known, to_filter
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
-from prompt_toolkit.layout import ConditionalContainer, HSplit, Window
+from prompt_toolkit.layout import ConditionalContainer, HSplit, VerticalAlign, Window
+from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.utils import is_dumb_terminal
 
 from .clipboard import ClipboardContent, read_clipboard
@@ -131,6 +133,7 @@ class TerminalInput:
         self._text = ""
         self._cursor = 0
         self._notice = ""
+        self._usage_text = ""
         bindings = KeyBindings()
 
         @bindings.add("c-v")
@@ -181,7 +184,42 @@ class TerminalInput:
             ):
                 container.content = HSplit([Window(height=1), container.content])
                 break
+        # 非全屏布局只占用当前光标下方区域，空白留在上方，使统计和输入紧邻底栏。
+        # 提交时统计窗隐藏，PromptSession 只将输入行固定到普通终端历史。
+        self._session.layout.current_window.dont_extend_height = to_filter(True)
+        self._session.layout.container.align = VerticalAlign.BOTTOM
+        self._session.layout.container.children.insert(
+            0,
+            ConditionalContainer(
+                Window(
+                    FormattedTextControl(lambda: [("fg:#758089", self._usage_text)]),
+                    wrap_lines=True,
+                    dont_extend_height=True,
+                ),
+                filter=Condition(lambda: bool(self._usage_text)) & ~is_done & renderer_height_is_known,
+            ),
+        )
         self._session.default_buffer.on_text_changed += self._on_change
+
+    def set_usage(self, text: str) -> None:
+        """替换输入区上方的当前会话统计。
+
+        作用:
+            接收展示层格式化后的统计，在等待输入时固定显示，不写入终端历史。
+
+        参数:
+            text: 上下文和会话消耗组成的纯文字，可包含换行；空字符串隐藏统计区。
+
+        返回:
+            无返回值（None）。
+
+        行为说明:
+            1. 替换上一份统计，不累加数值或访问数据库。
+            2. 输入区正在运行时请求重绘，否则在下次 read 时显示。
+        """
+        self._usage_text = text
+        if self._session.app.is_running:
+            self._session.app.invalidate()
 
     @property
     def _buffer(self):

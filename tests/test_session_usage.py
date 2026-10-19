@@ -10,6 +10,7 @@ from rich.console import Console
 from kairos import cli, pricing
 from kairos.pricing import Usage
 from kairos.runtime import create_runtime
+from kairos.terminal_input import InputDraft
 
 FIRST = {"prompt_tokens": 1000, "cached_input_tokens": 400, "completion_tokens": 30, "reasoning_tokens": 10}
 SECOND = {"prompt_tokens": 1500, "cached_input_tokens": 500, "completion_tokens": 40, "reasoning_tokens": 15}
@@ -65,6 +66,100 @@ class MeteredModel:
         if isinstance(response, BaseException):
             raise response
         return deepcopy(response)
+
+
+class UsageInput:
+    """记录固定统计栏的刷新内容和每次输入开始时的可见状态。"""
+
+    def __init__(self, inputs, output):
+        """保存离线输入并准备统计栏的观察记录。
+
+        作用:
+            替代交互输入边界，使真实 CLI、渲染器和 Runtime 连接到可检查的底栏。
+
+        参数:
+            inputs: 按读取顺序排列的输入文字。
+            output: 收集真实 Rich 输出的内存文本流。
+
+        返回:
+            无返回值（None）。
+
+        行为说明:
+            1. 分别记录底栏更新和输入时看到的统计，检查刷新时机。
+        """
+        self.inputs = iter(inputs)
+        self.output = output
+        self.usage = None
+        self.updates = []
+        self.read_usages = []
+        self.outputs_at_update = []
+        self.clear_count = 0
+        self.closed = False
+
+    def set_usage(self, text):
+        """记录 CLI 推送的最新两行统计。
+
+        作用:
+            观察生产渲染器传入底栏的内容及该时刻已输出的消息。
+
+        参数:
+            text: 渲染器生成的纯文字统计。
+
+        返回:
+            无返回值（None）。
+
+        行为说明:
+            1. 覆盖当前内容，同时保留更新历史用于验证切换和失败收尾。
+        """
+        self.usage = text
+        self.updates.append(text)
+        self.outputs_at_update.append(self.output.getvalue())
+
+    def read(self, draft=None):
+        """记录输入开始前的统计并返回下一条离线草稿。
+
+        作用:
+            驱动真实 CLI 的对话与命令循环，确认用户输入前底栏已经更新。
+
+        参数:
+            draft: CLI 传入的可选恢复草稿，本测试使用预设输入替代。
+
+        返回:
+            下一条离线输入草稿（InputDraft）。
+
+        行为说明:
+            1. 每次读取只消费一条输入，不自行修改会话统计。
+        """
+        self.read_usages.append(self.usage)
+        return InputDraft(next(self.inputs))
+
+    def clear(self):
+        """记录 CLI 在切换会话后清理输入的动作。
+
+        作用:
+            保持输入编辑器接口完整，统计内容仍由生产渲染器更新。
+
+        返回:
+            无返回值（None）。
+
+        行为说明:
+            1. 只累计清理次数，不模拟会话数据变化。
+        """
+        self.clear_count += 1
+
+    def close(self):
+        """记录 CLI 退出时关闭输入编辑器的动作。
+
+        作用:
+            让测试确认注入的交互编辑器正常结束生命周期。
+
+        返回:
+            无返回值（None）。
+
+        行为说明:
+            1. 将关闭状态置为真，不再触发统计更新。
+        """
+        self.closed = True
 
 
 @pytest.fixture(autouse=True)
@@ -295,7 +390,8 @@ def test_missing_field_preserves_other_totals_and_known_costs(tmp_path, field, e
         assert result.session_usage.unpriced_steps == unpriced
 
 
-def test_cli_shows_current_session_on_startup_turn_and_each_switch(tmp_path, monkeypatch):
+@pytest.mark.parametrize("footer", [False, True])
+def test_cli_shows_current_session_on_startup_turn_and_each_switch(tmp_path, monkeypatch, footer):
     """验证终端启动、回答结束及会话切换均立即展示当前统计。
 
     作用:
@@ -304,13 +400,15 @@ def test_cli_shows_current_session_on_startup_turn_and_each_switch(tmp_path, mon
     参数:
         tmp_path: 当前测试独立的临时目录。
         monkeypatch: pytest 的临时替换工具，用于提供离线终端输入。
+        footer: 为真时通过交互输入编辑器显示固定统计栏。
 
     返回:
         无返回值（None）；断言展示顺序、费用与上下文分别属于当前会话。
 
     行为说明:
-        1. 保存旧会话后关闭连接，通过 CLI 启动选项恢复旧会话并继续提问。
+        1. 保存旧会话后关闭连接，通过 CLI 启动选项恢复旧会话并连续提问两轮。
         2. 执行新建、恢复及重置，检查无需发送新请求就显示对应统计。
+        3. 交互输入只更新底栏，普通终端继续输出统计文字。
     """
     database = tmp_path / "cli.sqlite3"
     with create_runtime(model=MeteredModel([{"content": "旧回答", "usage": FIRST}]), db_path=database) as runtime:
@@ -319,40 +417,62 @@ def test_cli_shows_current_session_on_startup_turn_and_each_switch(tmp_path, mon
 
     output = StringIO()
     console = Console(file=output, width=240, color_system=None)
-    inputs = iter(["继续回答", "/new 新会话", f"/resume {session_id}", "/reset", "/exit"])
+    inputs = iter(["继续回答", "再次回答", "/new 新会话", f"/resume {session_id}", "/reset", "/exit"])
+    editor = UsageInput(inputs, output) if footer else None
     monkeypatch.setattr(console, "input", lambda prompt: next(inputs))
-    with create_runtime(model=MeteredModel([{"content": "新回答", "usage": SECOND}]), db_path=database) as runtime:
-        cli.run(console=console, runtime=runtime, session_id=session_id)
+    with create_runtime(
+        model=MeteredModel([{"content": "新回答", "usage": SECOND}, {"content": "再次回答", "usage": THIRD}]),
+        db_path=database,
+    ) as runtime:
+        cli.run(console=console, runtime=runtime, session_id=session_id, input_editor=editor)
 
     text = output.getvalue()
-    usage_lines = [line for line in text.splitlines() if line.startswith("会话输入")]
-    assert len(usage_lines) == 5
+    if footer:
+        assert editor.read_usages == editor.updates
+        assert len(editor.updates) == 6
+        assert all(len(update.splitlines()) == 2 for update in editor.updates)
+        assert all("[" not in update for update in editor.updates)
+        assert editor.clear_count == 3
+        assert editor.closed
+        assert "上下文窗口" not in text
+        assert "会话输入" not in text
+        assert "会话费用" not in text
+        stats = "\n".join(editor.updates)
+    else:
+        stats = text
+    usage_lines = [line for line in stats.splitlines() if line.startswith("会话输入")]
+    assert len(usage_lines) == 6
     assert [line.split("（", 1)[0] for line in usage_lines] == [
         "会话输入 1,000",
         "会话输入 2,500",
+        "会话输入 4,500",
         "会话输入 0",
-        "会话输入 2,500",
+        "会话输入 4,500",
         "会话输入 0",
     ]
     assert [line.rsplit(" · ", 1)[1] for line in usage_lines] == [
         "会话费用 $0.00169",
         "会话费用 $0.00431",
+        "会话费用 $0.00786",
         "会话费用 $0.00000",
-        "会话费用 $0.00431",
+        "会话费用 $0.00786",
         "会话费用 $0.00000",
     ]
-    assert "上下文窗口 1,000 / 10,000（10.00%）" in text
-    assert text.count("上下文窗口 1,500 / 10,000（15.00%）") == 2
-    assert "25.00%" not in text
-    assert "本轮输入" not in text
-    assert "本轮费用" not in text
+    assert "上下文窗口 1,000 / 10,000（10.00%）" in stats
+    assert stats.count("上下文窗口 1,500 / 10,000（15.00%）") == 1
+    assert stats.count("上下文窗口 2,000 / 10,000（20.00%）") == 2
+    assert "25.00%" not in stats
+    assert "45.00%" not in stats
+    assert "本轮输入" not in stats
+    assert "本轮费用" not in stats
 
 
 @pytest.mark.parametrize(
     ("error", "notice"),
     [(OSError("离线续轮失败"), "本轮执行失败：OSError: 离线续轮失败"), (KeyboardInterrupt(), "已中断。")],
 )
-def test_cli_immediately_shows_partial_cost_after_failure_or_interrupt(tmp_path, monkeypatch, error, notice):
+@pytest.mark.parametrize("footer", [False, True])
+def test_cli_immediately_shows_partial_cost_after_failure_or_interrupt(tmp_path, monkeypatch, error, notice, footer):
     """验证工具续轮失败或中断后立即展示已保存的费用。
 
     作用:
@@ -363,6 +483,7 @@ def test_cli_immediately_shows_partial_cost_after_failure_or_interrupt(tmp_path,
         monkeypatch: pytest 的临时替换工具，用于提供离线终端输入。
         error: 第二次模型请求触发的错误或中断。
         notice: CLI 对应错误分支应展示的文字。
+        footer: 为真时通过交互输入编辑器显示固定统计栏。
 
     返回:
         无返回值（None）；断言失败提示后立即出现部分费用且能够退出。
@@ -375,22 +496,37 @@ def test_cli_immediately_shows_partial_cost_after_failure_or_interrupt(tmp_path,
     output = StringIO()
     console = Console(file=output, width=240, color_system=None)
     inputs = iter(["查询待办", "/exit"])
+    editor = UsageInput(inputs, output) if footer else None
     monkeypatch.setattr(console, "input", lambda prompt: next(inputs))
     with create_runtime(model=model, db_path=tmp_path / "cli-failure.sqlite3") as runtime:
-        cli.run(console=console, runtime=runtime)
+        cli.run(console=console, runtime=runtime, input_editor=editor)
         assert runtime.session_usage().step_count == 2
 
     text = output.getvalue()
-    usage_lines = [line for line in text.splitlines() if line.startswith("会话输入")]
+    if footer:
+        assert editor.read_usages == editor.updates
+        assert len(editor.updates) == 2
+        assert notice in editor.outputs_at_update[1]
+        assert "上下文窗口 未知" in editor.updates[1]
+        assert "上下文窗口" not in text
+        assert "会话输入" not in text
+        assert "会话费用" not in text
+        assert editor.closed
+        stats = "\n".join(editor.updates)
+    else:
+        stats = text
+    usage_lines = [line for line in stats.splitlines() if line.startswith("会话输入")]
     assert len(usage_lines) == 2
     assert usage_lines[0].startswith("会话输入 0")
     assert usage_lines[1].startswith("会话输入 未知")
     assert "会话费用 $0.00169（部分未估算）" in usage_lines[1]
-    assert text.index(notice) < text.index(usage_lines[1])
-    assert "上下文窗口 未知" in text[text.index(notice) :]
+    if not footer:
+        assert text.index(notice) < text.index(usage_lines[1])
+        assert "上下文窗口 未知" in text[text.index(notice) :]
 
 
-def test_cli_usage_read_error_preserves_request_error_and_interaction(tmp_path, monkeypatch):
+@pytest.mark.parametrize("footer", [False, True])
+def test_cli_usage_read_error_preserves_request_error_and_interaction(tmp_path, monkeypatch, footer):
     """验证统计读取失败不会覆盖原请求错误或终止命令交互。
 
     作用:
@@ -399,6 +535,7 @@ def test_cli_usage_read_error_preserves_request_error_and_interaction(tmp_path, 
     参数:
         tmp_path: 当前测试独立的临时目录。
         monkeypatch: pytest 的临时替换工具，用于离线输入和统计读故障注入。
+        footer: 为真时通过交互输入编辑器显示固定统计栏。
 
     返回:
         无返回值（None）；断言原错误、未知统计和后续帮助按顺序展示。
@@ -411,6 +548,7 @@ def test_cli_usage_read_error_preserves_request_error_and_interaction(tmp_path, 
     output = StringIO()
     console = Console(file=output, width=240, color_system=None)
     inputs = iter(["查询待办", "/help", "/exit"])
+    editor = UsageInput(inputs, output) if footer else None
     monkeypatch.setattr(console, "input", lambda prompt: next(inputs))
     with create_runtime(model=model, db_path=tmp_path / "cli-read-failure.sqlite3") as runtime:
         read_usage = runtime.session_usage
@@ -437,12 +575,25 @@ def test_cli_usage_read_error_preserves_request_error_and_interaction(tmp_path, 
             return read_usage()
 
         monkeypatch.setattr(runtime, "session_usage", fail_second_read)
-        cli.run(console=console, runtime=runtime)
+        cli.run(console=console, runtime=runtime, input_editor=editor)
         assert len(reads) == 2
         assert read_usage().cost == pytest.approx(FIRST_COST)
 
     text = output.getvalue()
     assert "本轮执行失败：OSError: 原请求失败" in text
-    assert "会话用量未知 · 会话费用未估算" in text
-    assert text.index("原请求失败") < text.index("会话用量未知") < text.index("/new 标题")
+    if footer:
+        assert len(editor.updates) == 2
+        assert editor.read_usages == [editor.updates[0], editor.updates[1], editor.updates[1]]
+        assert editor.updates[1] == "上下文窗口 未知\n会话用量未知 · 会话费用未估算"
+        assert "原请求失败" in editor.outputs_at_update[1]
+        assert "/new 标题" not in editor.outputs_at_update[1]
+        assert "/new 标题" in text
+        assert "上下文窗口" not in text
+        assert "会话输入" not in text
+        assert "会话用量未知" not in text
+        assert "会话费用" not in text
+        assert editor.closed
+    else:
+        assert "会话用量未知 · 会话费用未估算" in text
+        assert text.index("原请求失败") < text.index("会话用量未知") < text.index("/new 标题")
     assert "模拟统计读取失败" not in text

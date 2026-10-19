@@ -136,6 +136,7 @@ def run(
             except TerminalInputUnsupportedError:
                 renderer.status("[dim]当前终端使用文字输入模式；图片粘贴和拖入需要支持交互的终端。[/]")
 
+        renderer.usage_callback = getattr(input_editor, "set_usage", None)
         renderer.status(f"[bold]Kairos[/] · {_session_label(runtime)} · 输入 /help 查看命令")
         _show_recovery_notice(runtime, renderer)
         _show_session_usage(runtime, renderer)

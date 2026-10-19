@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -137,6 +137,7 @@ class TerminalRenderer:
         self.console = console or Console()
         self._parts: list[str] = []
         self._live: Live | None = None
+        self.usage_callback: Callable[[str], None] | None = None
 
     @contextmanager
     def stream_output(self) -> Iterator[None]:
@@ -271,11 +272,12 @@ class TerminalRenderer:
             summary: 数据库步骤汇总；None 表示调用方没有提供会话统计。
 
         返回:
-            无返回值（None）；向终端打印统计文字。
+            无返回值（None）；更新交互底栏，或向普通输出打印统计文字。
 
         行为说明:
             1. 上下文窗口单独一行，按最后一次请求的完整输入计算占比，不含新输出。
             2. 会话输入、输出与费用放在同一行；缺失用量显示未知，部分费用注明未全部估算。
+            3. 已连接输入区时只替换底栏内容，避免将每轮统计留在聊天记录中。
         """
         window = CONTEXT_WINDOW.get(model)
         last_request_usage = summary.last_request_usage if summary else None
@@ -286,7 +288,6 @@ class TerminalRenderer:
             context = f"上下文窗口 {latest_input:,} / {window:,}（{latest_input / window:.2%}）"
         else:
             context = f"上下文窗口 {latest_input:,}（上限未知）"
-        self.status(f"[dim]{context}[/]")
 
         parts = []
         if summary is None:
@@ -313,4 +314,9 @@ class TerminalRenderer:
             if summary.unpriced_steps:
                 cost += "（部分未估算）"
             parts.append(cost)
-        self.status("[dim]" + " · ".join(parts) + "[/]")
+        usage_text = " · ".join(parts)
+        if self.usage_callback is not None:
+            self.usage_callback(f"{context}\n{usage_text}")
+        else:
+            self.status(f"[dim]{context}[/]")
+            self.status(f"[dim]{usage_text}[/]")
