@@ -20,6 +20,8 @@ from .agent_loop import AgentLoopLimitError, EventLogger, Model, ToolHandler, ru
 from .config import Settings
 from .context import ContextBuilder
 from .execution import TurnRecorder
+from .history import HistoryReader
+from .history_tools import HISTORY_TOOL_SCHEMAS
 from .images import ImageInput, redact_images, validate_image_budget
 from .memory import MemoryStore
 from .memory_extraction import ExtractionJob, MemoryExtractor
@@ -367,11 +369,11 @@ class AgentRuntime:
 
         异常:
             ValueError: 新建会话要求开启思考，但当前适配器尚未接入思考开关；
-                或工具注册表已经占用内建记忆工具名。
+                或工具注册表已经占用内建记忆、历史工具名。
 
         行为说明:
             1. 保存依赖和资源归属标记，初始化回合状态及上次执行结果。
-            2. 使用注入的存储或创建存储；无 session_info 时保存新会话。
+            2. 使用注入的存储或创建存储，并注册只读历史工具；无 session_info 时保存新会话。
             3. 激活目标会话并加载上下文；此处不运行历史工具，也不请求模型。
             4. 构造失败时不自行关闭依赖；通过 create_runtime 创建时由工厂清理。
         """
@@ -414,7 +416,22 @@ class AgentRuntime:
         self.thinking_state_corrected = False
         if session_info is None and thinking_enabled and not _supports_thinking(model):
             raise ValueError("Kairos 尚未为当前模型接入思考开关，无法创建开启思考的会话")
+        history_names = {"search_history", "read_session"}
+        registered_names = set(self.tool_registry.handlers) | {
+            schema.get("function", {}).get("name") for schema in self.tool_registry.schemas
+        }
+        if history_names.intersection(registered_names):
+            raise ValueError("工具注册表已占用内建历史工具名")
         self.session_store = session_store or SessionStore(connection)
+        self.history_reader = HistoryReader(self.session_store)
+        self.tool_registry = ToolRegistry(
+            handlers={
+                **self.tool_registry.handlers,
+                "search_history": self.history_reader.search_history,
+                "read_session": self.history_reader.read_session,
+            },
+            schemas=[*deepcopy(self.tool_registry.schemas), *deepcopy(HISTORY_TOOL_SCHEMAS)],
+        )
         info = session_info or self.session_store.create_session(
             system_prompt,
             provider=_model_provider(model),

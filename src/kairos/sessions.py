@@ -700,6 +700,131 @@ class SessionStore:
             )
         ]
 
+    def exact_history_session(self, session_id: str) -> dict:
+        """按完整 ID 查询历史会话的最小元信息。
+
+        作用:
+            为模型历史工具校验会话归属，只执行 SELECT，不接受 ID 前缀。
+
+        参数:
+            session_id: 数据库保存的完整会话 ID。
+
+        返回:
+            含 session_id、title 的字典(dict)。
+
+        行为说明:
+            1. 直接进行等值查询，由 _one 报告不存在的会话。
+            2. 不恢复会话、不更新活动时间，也不改变连接的 row_factory。
+        """
+        return self._one("SELECT session_id, title FROM sessions WHERE session_id = ?", (session_id,), "会话")
+
+    def iter_history_turns(
+        self, *, session_id: str | None = None, since: str | None = None, until: str | None = None
+    ) -> Iterator[dict]:
+        """逐回合读取已经结束且保留有效消息的历史元信息。
+
+        作用:
+            为历史搜索提供可流式遍历的候选，避免一次装入全库结果。
+            只读取数据库，不恢复中断回合或提交事务。
+
+        参数:
+            session_id: 可选完整会话 ID，为空时跨会话查询。
+            since: 可选 ISO 时间下界，包含边界；调用方负责校验和标准化。
+            until: 可选 ISO 时间上界，不包含边界。
+
+        返回:
+            按会话及回合首条消息顺序生成的元信息(Iterator[dict])。
+
+        行为说明:
+            1. 排除 running 回合及完全不在上下文中的回合。
+            2. 时间在 Python 中按实际时刻比较，保留微秒精度和时区含义。
+            3. 仅为独立游标设置 Row，迭代完毕或关闭时释放游标。
+        """
+        conditions = [
+            "t.status != 'running'",
+            "EXISTS (SELECT 1 FROM session_messages m WHERE m.turn_id = t.turn_id AND m.in_context = 1)",
+        ]
+        parameters: list[str] = []
+        if session_id is not None:
+            conditions.append("t.session_id = ?")
+            parameters.append(session_id)
+        lower = datetime.fromisoformat(since) if since is not None else None
+        upper = datetime.fromisoformat(until) if until is not None else None
+        sql = """SELECT t.turn_id, t.session_id, t.status, t.created_at, t.finished_at,
+            s.title AS session_title, u.seq AS first_seq
+            FROM session_turns t JOIN sessions s ON s.session_id = t.session_id
+            JOIN session_messages u ON u.message_id = t.user_message_id WHERE """
+        cursor = self.connection.cursor()
+        cursor.row_factory = sqlite3.Row
+        try:
+            for row in cursor.execute(sql + " AND ".join(conditions) + " ORDER BY t.session_id, u.seq", parameters):
+                created = datetime.fromisoformat(row["created_at"])
+                if lower is not None and created < lower or upper is not None and created >= upper:
+                    continue
+                yield dict(row)
+        finally:
+            cursor.close()
+
+    def history_messages(self, session_id: str, turn_id: str) -> Iterator[dict]:
+        """逐条读取指定历史回合的有效消息和工具名称。
+
+        作用:
+            向历史工具提供原始记录供其投影，工具结果通过存储关联辨认名称。
+            不执行工具、不修改消息，也不加载其他回合。
+
+        参数:
+            session_id: 已由调用方验证的完整会话 ID。
+            turn_id: 属于该会话的完整回合 ID。
+
+        返回:
+            按 seq 排列、payload 已解码的记录(Iterator[dict])；无有效记录时为空。
+
+        行为说明:
+            1. 用 SELECT 和 LEFT JOIN 读取有效消息以及工具结果对应的名称。
+            2. 每次只解码一条消息，正文过滤由 HistoryReader 完成。
+        """
+        cursor = self.connection.cursor()
+        cursor.row_factory = sqlite3.Row
+        try:
+            rows = cursor.execute(
+                """SELECT m.message_id, m.turn_id, m.seq, m.role, m.payload, m.created_at,
+                    c.tool_name FROM session_messages m
+                    LEFT JOIN session_tool_calls c ON c.step_id = m.step_id AND c.tool_call_id = m.tool_call_id
+                    WHERE m.session_id = ? AND m.turn_id = ? AND m.in_context = 1 ORDER BY m.seq""",
+                (session_id, turn_id),
+            )
+            for row in rows:
+                value = dict(row)
+                value["payload"] = json.loads(value["payload"])
+                yield value
+        finally:
+            cursor.close()
+
+    def history_anchor(self, session_id: str, message_id: str) -> dict:
+        """查询历史消息所属的有效回合。
+
+        作用:
+            为消息锚点读取核验归属，避免跨会话混用 ID 或读取被撤回输入。
+
+        参数:
+            session_id: 完整会话 ID。
+            message_id: 完整消息 ID。
+
+        返回:
+            含 message_id、turn_id 的字典(dict)。
+
+        行为说明:
+            1. 同时检查会话、消息、有效性和回合已经结束。
+            2. 找不到合法锚点时由 _one 抛错；全程只读取数据库。
+        """
+        return self._one(
+            """SELECT m.message_id, m.turn_id FROM session_messages m
+                JOIN session_turns t ON t.turn_id = m.turn_id
+                WHERE m.session_id = ? AND m.message_id = ? AND m.in_context = 1 AND t.status != 'running'""",
+            (session_id, message_id),
+            "可读取的历史消息",
+        )
+
     def begin_turn(self, session_id: str, payload: dict, *, title_hint: str | None = None) -> TurnRecord:
         """创建回合及其发起用户消息并建立双向关联。
 

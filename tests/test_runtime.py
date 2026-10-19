@@ -121,6 +121,8 @@ def test_runtime_uses_registered_todo_tool_and_keeps_tool_messages(tmp_path):
             "delete_todo",
             "remember",
             "read_memory",
+            "search_history",
+            "read_session",
         } == set(runtime.tool_registry.handlers)
         assert [todo["title"] for todo in list_todos(runtime.connection)] == ["测试运行时工具"]
         assert [message["role"] for message in result.messages] == [
