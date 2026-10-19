@@ -78,13 +78,68 @@ earlier_context 只帮助理解本轮指代；只从 current_turn 新增或确�
 - 用户说“我叫林舟，有十年后端开发经验。”：姓名用 write_core，职业背景用 write_topic。
 
 没有值得保存的新增内容时，不调用写入工具。
-任务结束时只返回 JSON 对象：{"status":"no_change"|"completed"|"conflict"}。
+任务结束时只返回以下三个 JSON 对象中的一个，不加说明文字或 Markdown 代码围栏：
+{"status":"no_change"}
+{"status":"completed"}
+{"status":"conflict"}
 只有工具确认实际写入后才使用 completed；保存结果由程序核对，不能靠文字声称成功。
 """
 
 _SOURCE_KEYS = ("session_id", "turn_id", "message_id")
 _CONTEXT_SOURCE_KEYS = ("context_start_message_id", "context_end_message_id")
 _USAGE_KEYS = ("prompt_tokens", "completion_tokens", "total_tokens", "cached_input_tokens", "reasoning_tokens")
+_FINISH_REASONS = {
+    "stop",
+    "end_turn",
+    "length",
+    "max_tokens",
+    "tool_calls",
+    "stop_sequence",
+    "pause_turn",
+    "content_filter",
+    "refusal",
+}
+
+
+def _parse_completion(content: str, finish_reason: str | None) -> tuple[str | None, str | None]:
+    """解析提取器的最终状态，并返回不含正文的受控失败原因。
+
+    作用:
+        在工具执行结束后核对模型的结束声明，避免把截断或不合法格式误报为成功。
+
+    参数:
+        content: 模型返回的完整最终正文。
+        finish_reason: 已按白名单过滤的最后一次模型结束原因；未知时为 None。
+
+    返回:
+        状态与失败原因（tuple[str | None, str | None]）；成功时原因是 None，
+        失败时状态是 None，原因仅为 empty、invalid_json、not_object、invalid_status 或 truncated。
+
+    行为说明:
+        1. 优先拒绝长度上限截断；正文即使碰巧是合法 JSON 也不认作完整结束。
+        2. 只解析单个 JSON 对象，允许整段由单一 json 或无语言代码围栏包裹。
+        3. 不从解释文字中搜索 JSON；状态必须是三个允许的字符串之一。
+    """
+    if finish_reason in {"length", "max_tokens"}:
+        return None, "truncated"
+    text = content.strip()
+    if not text:
+        return None, "empty"
+    lines = text.splitlines()
+    if len(lines) >= 3 and lines[0] in {"```", "```json"} and lines[-1] == "```":
+        text = "\n".join(lines[1:-1]).strip()
+        if not text:
+            return None, "empty"
+    try:
+        final = json.loads(text)
+    except (ValueError, TypeError):
+        return None, "invalid_json"
+    if not isinstance(final, dict):
+        return None, "not_object"
+    status = final.get("status")
+    if not isinstance(status, str) or status not in {"completed", "no_change", "conflict"}:
+        return None, "invalid_status"
+    return status, None
 
 
 @dataclass(frozen=True)
@@ -339,7 +394,7 @@ class MemoryExtractor:
             job: 队列持有的固定任务材料。
 
         返回:
-            只包含来源、状态、核心新增数、主题 ID、用量、耗时和受控错误码的字典。
+            只包含来源、状态、核心新增数、主题 ID、用量、耗时和受控诊断元数据的字典。
 
         行为说明:
             1. 既有主题必须在本次任务中读过才能追加；来源由运行时绑定。
@@ -356,6 +411,9 @@ class MemoryExtractor:
             "usage": [],
             "request_count": 0,
             "error_code": None,
+            "completion_reason": None,
+            "completion_chars": None,
+            "finish_reason": None,
         }
         read_ids: set[str] = set()
         tool_errors = 0
@@ -458,11 +516,16 @@ class MemoryExtractor:
 
             行为说明:
                 1. 模型响应只保留白名单中的非负整数用量，缺失值保留未知。
-                2. 工具错误只增加计数，不复制异常说明、参数或模型正文。
+                2. 每次响应替换最后结束原因，仅保留白名单值，未知值保存为 None。
+                3. 工具错误只增加计数，不复制异常说明、参数或模型正文。
             """
             nonlocal tool_errors
             if event["event"] == "model_response":
                 result["request_count"] += 1
+                finish_reason = (event.get("response") or {}).get("finish_reason")
+                result["finish_reason"] = (
+                    finish_reason if isinstance(finish_reason, str) and finish_reason in _FINISH_REASONS else None
+                )
                 usage = event.get("usage") or {}
                 result["usage"].append(
                     {
@@ -484,14 +547,11 @@ class MemoryExtractor:
                 logger=observe,
                 prepare_messages=ContextBuilder(self.store, purpose="extraction"),
             )
-            try:
-                final = json.loads(content)
-            except (ValueError, TypeError):
-                final = None
-            status = final.get("status") if isinstance(final, dict) else None
+            result["completion_chars"] = len(content)
+            status, result["completion_reason"] = _parse_completion(content, result["finish_reason"])
             if tool_errors:
                 result["error_code"] = "tool_failed"
-            elif status not in {"completed", "no_change", "conflict"}:
+            elif result["completion_reason"]:
                 result["error_code"] = "invalid_completion"
             elif status == "conflict":
                 result["error_code"] = "memory_conflict"

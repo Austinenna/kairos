@@ -21,6 +21,23 @@ from .terminal_renderer import TerminalRenderer
 
 __all__ = ["run"]
 
+_MEMORY_FAILURE_REASONS = {
+    "invalid_completion": "模型未返回有效的结束状态",
+    "tool_failed": "记忆工具执行失败",
+    "tool_round_limit": "记忆工具调用超过次数上限",
+    "model_factory_failed": "后台模型初始化失败",
+    "extraction_failed": "模型请求或提取过程出错",
+    "result_record_failed": "提取结果日志写入失败",
+    "client_close_failed": "模型连接关闭失败",
+}
+_MEMORY_COMPLETION_REASONS = {
+    "empty": "模型返回了空的结束内容",
+    "invalid_json": "模型结束内容不是有效 JSON",
+    "not_object": "模型结束内容不是 JSON 对象",
+    "invalid_status": "模型结束状态缺失或不合法",
+    "truncated": "模型结束内容被截断",
+}
+
 HELP = """\
 [bold]命令[/]
   /new 标题        新建并切换会话，标题可省略，保留旧会话
@@ -289,7 +306,7 @@ def _show_memory_events(runtime: AgentRuntime, renderer: TerminalRenderer) -> No
         None。
 
     行为说明:
-        1. 无新增结果保持安静；展示核心更新、主题更新数量及冲突、部分完成和失败。
+        1. 无新增结果保持安静；展示实际写入及冲突、部分完成和失败的受控原因。
         2. 不展示完整记忆、认证配置或模型错误正文；审计保存在记忆目录的 JSONL 中。
     """
     drain = getattr(runtime, "drain_memory_events", None)
@@ -309,10 +326,15 @@ def _show_memory_events(runtime: AgentRuntime, renderer: TerminalRenderer) -> No
                 renderer.status(f"[dim]后台记忆：{'；'.join(changes)}。[/]")
         elif status == "conflict":
             renderer.status("[yellow]后台记忆发现冲突，未覆盖原记录。[/]")
-        elif status == "partial":
-            renderer.status("[yellow]后台记忆已保存部分内容，但本轮提取未完整完成。[/]")
-        elif status == "failed":
-            renderer.status("[yellow]后台记忆提取失败；详情见 ~/.kairos/memory/extraction.jsonl。[/]")
+        elif status in {"partial", "failed"}:
+            code = event.get("error_code")
+            reason = _MEMORY_FAILURE_REASONS.get(code, "后台任务未正常完成")
+            if code == "invalid_completion":
+                reason = _MEMORY_COMPLETION_REASONS.get(event.get("completion_reason"), reason)
+            if status == "partial":
+                renderer.status(f"[yellow]后台记忆已保存部分内容，但提取未完整完成：{reason}。[/]")
+            else:
+                renderer.status(f"[yellow]后台记忆提取失败：{reason}；详情见 ~/.kairos/memory/extraction.jsonl。[/]")
 
 
 def _session_label(runtime: AgentRuntime) -> str:

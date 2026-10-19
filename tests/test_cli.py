@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from kairos.cli import _show_memory_events, run
 from kairos.runtime import AgentTurnResult, create_runtime
 from kairos.terminal_input import TerminalInputUnsupportedError
@@ -32,6 +34,43 @@ def test_memory_events_report_core_and_topics_without_false_zero_updates():
         "[dim]后台记忆：已更新 1 个主题。[/]",
         "[dim]后台记忆：核心记忆已更新；已更新 2 个主题。[/]",
     ]
+
+
+@pytest.mark.parametrize(
+    ("event", "expected"),
+    [
+        ({"status": "failed", "error_code": "invalid_completion"}, "模型未返回有效的结束状态"),
+        (
+            {"status": "failed", "error_code": "invalid_completion", "completion_reason": "invalid_json"},
+            "模型结束内容不是有效 JSON",
+        ),
+        (
+            {"status": "partial", "error_code": "invalid_completion", "completion_reason": "truncated"},
+            "已保存部分内容，但提取未完整完成：模型结束内容被截断",
+        ),
+        ({"status": "failed", "error_code": "PRIVATE_RAW_ERROR"}, "后台任务未正常完成"),
+    ],
+)
+def test_memory_failure_notice_explains_safe_reason(event, expected):
+    """验证记忆失败提示展示明确原因且不泄露任意错误原文。
+
+    作用:
+        覆盖旧事件、细分类别和部分写入的终端提示，避免只显示笼统失败。
+
+    参数:
+        event: 提取器返回的受控通知或包含未知错误码的兼容事件。
+        expected: 应展示的固定中文原因。
+
+    返回:
+        None，由断言确认可见内容。
+
+    行为说明:
+        1. 通过实际通知入口捕获输出，未知错误码只使用通用说明。
+    """
+    output = []
+    _show_memory_events(SimpleNamespace(drain_memory_events=lambda: [event]), SimpleNamespace(status=output.append))
+    assert expected in output[0]
+    assert "PRIVATE_RAW_ERROR" not in output[0]
 
 
 class FakeConsole:

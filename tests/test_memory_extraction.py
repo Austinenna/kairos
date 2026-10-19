@@ -403,6 +403,197 @@ def test_noop_failure_and_partial_write_statuses(store, responses, status, code)
     assert model.client.closed
 
 
+@pytest.mark.parametrize("status", ["no_change", "completed", "conflict"])
+@pytest.mark.parametrize("wrapper", ["{}", "```json\n{}\n```", "```\n{}\n```"])
+def test_completion_accepts_only_supported_statuses_in_whole_json_or_fences(store, status, wrapper):
+    """验证合法结束状态及整段单一代码围栏的兼容解析。
+
+    作用:
+        保持模型格式差异的有限容错，同时以实际工具写入判断保存结果。
+
+    参数:
+        store: 临时记忆目录中的真实存储。
+        status: 三个允许的结束状态之一。
+        wrapper: 原始 JSON、json 围栏或无语言围栏的完整包装。
+
+    返回:
+        None，由断言检查结束原因、正文长度和实际保存状态。
+
+    行为说明:
+        1. 完整运行一次离线提取，不调用写入工具。
+        2. completed 文字声明不会被当成实际保存，冲突仍单独报告。
+    """
+    content = wrapper.format(json.dumps({"status": status}))
+    result = run_job(store, FakeModel([{"content": content, "finish_reason": "stop"}]))
+    assert result["status"] == ("conflict" if status == "conflict" else "no_change")
+    assert result["error_code"] == ("memory_conflict" if status == "conflict" else None)
+    assert result["completion_reason"] is None
+    assert result["completion_chars"] == len(content)
+    assert result["finish_reason"] == "stop"
+
+
+@pytest.mark.parametrize(
+    "content,reason",
+    [
+        ("", "empty"),
+        (" \n\t", "empty"),
+        ("```json\n\n```", "empty"),
+        ("PRIVATE_COMPLETION_TEXT", "invalid_json"),
+        ('说明：{"status":"no_change"}', "invalid_json"),
+        ('```json\n{"status":"no_change"}\n```\n说明', "invalid_json"),
+        ('{"status":"no_change"}\n{"status":"completed"}', "invalid_json"),
+        ('```json\n{"status":"no_change"}\n```\n```json\n{"status":"completed"}\n```', "invalid_json"),
+        ('[{"status":"no_change"}]', "not_object"),
+        ('"no_change"', "not_object"),
+        ("null", "not_object"),
+        ("{}", "invalid_status"),
+        ('{"status":null}', "invalid_status"),
+        ('{"status":[]}', "invalid_status"),
+        ('{"status":{}}', "invalid_status"),
+        ('{"status":true}', "invalid_status"),
+        ('{"status":12}', "invalid_status"),
+        ('{"status":"PRIVATE_INVALID_STATUS"}', "invalid_status"),
+    ],
+)
+def test_invalid_completion_records_reason_without_private_content(store, content, reason):
+    """验证不同无效结束格式均保留受控诊断且不泄露正文。
+
+    作用:
+        区分未返回内容、JSON 错误和状态错误，防止非字符串状态变成意外执行异常。
+
+    参数:
+        store: 临时记忆目录中的真实存储。
+        content: 离线模型最终正文，覆盖无效包装与无效状态类型。
+        reason: 预期的受控失败原因。
+
+    返回:
+        None，由断言检查失败分类、原文隔离和请求次数。
+
+    行为说明:
+        1. 一次模型响应后结束，不把格式错误降为无新增，也不自动重试。
+        2. 审计只保留长度与受控原因，不记录模型提供的私人文字或状态值。
+    """
+    result = run_job(store, FakeModel([{"content": content, "finish_reason": "stop"}]))
+    assert result["status"] == "failed"
+    assert result["error_code"] == "invalid_completion"
+    assert result["completion_reason"] == reason
+    assert result["completion_chars"] == len(content)
+    assert result["request_count"] == 1
+    assert "PRIVATE_" not in (store.root / "extraction.jsonl").read_text()
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "max_tokens"])
+@pytest.mark.parametrize("save_core", [False, True])
+def test_truncated_completion_is_rejected_even_when_json_is_complete(store, finish_reason, save_core):
+    """验证截断优先于合法 JSON，已写入内容仍报告部分完成。
+
+    作用:
+        防止输出长度上限碰巧落在完整 JSON 后就被误认成正常结束。
+
+    参数:
+        store: 临时记忆目录中的真实存储。
+        finish_reason: 两种已知的长度上限结束原因。
+        save_core: 截断前是否通过工具保存一条核心记忆。
+
+    返回:
+        None，由断言检查失败原因和实际写入保留。
+
+    行为说明:
+        1. 模拟最终正文可解析但供应商明确报告截断的响应。
+        2. 已保存核心不回滚，没有写入时保持失败状态。
+    """
+    responses = [call("write_core", {"content": "测试核心记录"})] if save_core else []
+    responses.append({"content": '{"status":"completed"}', "finish_reason": finish_reason})
+    result = run_job(store, FakeModel(responses))
+    assert result["status"] == ("partial" if save_core else "failed")
+    assert result["error_code"] == "invalid_completion"
+    assert result["completion_reason"] == "truncated"
+    assert result["finish_reason"] == finish_reason
+    assert result["core_additions"] == int(save_core)
+
+
+@pytest.mark.parametrize(
+    "finish_reason",
+    ["stop", "end_turn", "tool_calls", "stop_sequence", "pause_turn", "content_filter", "refusal"],
+)
+def test_completion_audit_accepts_only_known_finish_reasons(store, finish_reason):
+    """验证结束原因白名单只保存受控协议值。
+
+    作用:
+        保留诊断需要的供应商结束信号，不记录完整模型响应。
+
+    参数:
+        store: 临时记忆目录中的真实存储。
+        finish_reason: 白名单内的非截断结束原因。
+
+    返回:
+        None，由断言检查审计中保存的受控结束原因。
+
+    行为说明:
+        1. 用离线模型直接验证提取器的元数据过滤；供应商适配器的协议校验由其独立测试覆盖。
+    """
+    result = run_job(store, FakeModel([{**final(), "finish_reason": finish_reason}]))
+    assert result["finish_reason"] == finish_reason
+    assert json.loads((store.root / "extraction.jsonl").read_text())["finish_reason"] == finish_reason
+
+
+@pytest.mark.parametrize("finish_reason", [None, "PRIVATE_FINISH_REASON", [], {}])
+def test_last_finish_reason_replaces_previous_value_and_extra_json_fields_stay_private(store, finish_reason):
+    """验证未知末次原因覆盖旧值且额外 JSON 字段不会进入审计。
+
+    作用:
+        避免旧工具调用的结束原因冒充最终原因，或模型自由字段泄露私人正文。
+
+    参数:
+        store: 临时记忆目录中的真实存储。
+        finish_reason: 缺失、未知字符串或非法类型的最终结束原因。
+
+    返回:
+        None，由断言检查真实写入、最后结束原因和审计内容。
+
+    行为说明:
+        1. 第一请求保存核心并带 tool_calls 原因，第二请求返回未知原因。
+        2. 最终 JSON 的额外字段被忽略，不进入日志或完成事件。
+    """
+    first = {**call("write_core", {"content": "测试核心记录"}), "finish_reason": "tool_calls"}
+    last = {"content": '{"status":"completed","detail":"PRIVATE_EXTRA_FIELD"}', "finish_reason": finish_reason}
+    result = run_job(store, FakeModel([first, last]))
+    assert result["status"] == "completed"
+    assert result["finish_reason"] is None
+    assert result["completion_reason"] is None
+    assert "PRIVATE_" not in json.dumps(result)
+    assert "PRIVATE_" not in (store.root / "extraction.jsonl").read_text()
+
+
+def test_tool_failure_keeps_priority_over_invalid_completion_after_write(store):
+    """验证工具失败优先于结束格式错误且已保存内容不丢失。
+
+    作用:
+        在新增格式诊断后保留已有工具故障和部分完成的状态语义。
+
+    参数:
+        store: 临时记忆目录中的真实存储。
+
+    返回:
+        None，由断言检查优先错误码、解析原因和写入数量。
+
+    行为说明:
+        1. 先合法写入，再调用不允许的工具，最终返回无效正文。
+        2. 主要错误仍为 tool_failed，格式诊断作为独立元数据保留。
+    """
+    responses = [
+        call("write_core", {"content": "测试核心记录"}),
+        call("remember", {"content": "不应写入"}),
+        {"content": "PRIVATE_INVALID_COMPLETION"},
+    ]
+    result = run_job(store, FakeModel(responses))
+    assert result["status"] == "partial"
+    assert result["core_additions"] == 1
+    assert result["error_code"] == "tool_failed"
+    assert result["completion_reason"] == "invalid_json"
+    assert "PRIVATE_" not in (store.root / "extraction.jsonl").read_text()
+
+
 def test_loop_limit_is_not_success_after_partial_write(store):
     model = FakeModel([call("write_topic", new_topic()), call("write_topic", new_topic("第二条"))])
     result = run_job(store, model, max_tool_rounds=1)
