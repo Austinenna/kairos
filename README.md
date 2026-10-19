@@ -201,6 +201,8 @@ ANTHROPIC_BASE_URL=https://gateway.example
 - [ ] 阶段 7：评估与观测
 - [ ] 阶段 8：框架对比
 
+微信接入已开始做独立的[文字通路验证](docs/微信通路验证.md)：`scripts/weixin_probe.py` 仅验证扫码、指定测试口令的固定回复及重启恢复，不调用模型或现有业务工具。当前实际验证进度以该文档为准，尚未接入主程序。
+
 ## 开发
 
 ```bash
