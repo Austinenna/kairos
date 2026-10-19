@@ -35,6 +35,31 @@ READ_MEMORY_TOOL_SCHEMA = {
     },
 }
 
+WRITE_CORE_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "write_core",
+        "description": (
+            "只供后台提取器将用户本人直接表达的姓名/称呼、通用交流偏好和通用协作约定追加到 CORE，"
+            "无需用户说记住。先检查 CORE，已覆盖则跳过；仅 topics 已有时仍可提升并保留原主题。"
+            "普通职业、学习和项目背景写 topics；不覆盖冲突、不修改旧事实或删除。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "符合自动核心范围、由用户直接表达且 CORE 尚未覆盖的新增内容。",
+                },
+            },
+            "required": ["content"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
 WRITE_TOPIC_TOOL_SCHEMA = {
     "type": "function",
     "function": {
@@ -67,4 +92,4 @@ WRITE_TOPIC_TOOL_SCHEMA = {
 }
 
 PRIMARY_MEMORY_TOOL_SCHEMAS = [REMEMBER_TOOL_SCHEMA, READ_MEMORY_TOOL_SCHEMA]
-EXTRACTION_MEMORY_TOOL_SCHEMAS = [READ_MEMORY_TOOL_SCHEMA, WRITE_TOPIC_TOOL_SCHEMA]
+EXTRACTION_MEMORY_TOOL_SCHEMAS = [READ_MEMORY_TOOL_SCHEMA, WRITE_CORE_TOOL_SCHEMA, WRITE_TOPIC_TOOL_SCHEMA]

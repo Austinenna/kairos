@@ -280,7 +280,7 @@ def test_primary_cannot_call_background_writer_or_forge_source(tmp_path):
     """验证前台工具权限与来源参数边界。
 
     作用:
-        防止模型越过来源绑定或调用只属于后台的主题写入工具。
+        防止模型越过来源绑定或调用只属于后台的核心、主题写入工具。
 
     参数:
         tmp_path: 隔离目录。
@@ -294,6 +294,7 @@ def test_primary_cannot_call_background_writer_or_forge_source(tmp_path):
     model = Model(
         [
             tool("write_topic", {"topic_id": None, "title": "越权", "description": "不应写入", "addition": "内容"}),
+            tool("write_core", {"content": "前台不能自动写核心"}, "background-only"),
             tool("remember", {"content": "伪造来源", "source": {"message_id": "made-up"}}, "forged"),
             {"content": "权限不允许"},
         ]
@@ -302,8 +303,10 @@ def test_primary_cannot_call_background_writer_or_forge_source(tmp_path):
         result = runtime.respond("检查工具边界")
         assert all("error" in item.value for item in result.tool_results)
         names = {s["function"]["name"] for s in model.requests[0]["tools"]}
-        assert {"remember", "read_memory"} <= names and "write_topic" not in names
+        assert {"remember", "read_memory"} <= names
+        assert not {"write_topic", "write_core"} & names
         assert "伪造来源" not in runtime.memory_store.snapshot()[0]
+        assert "前台不能自动写核心" not in runtime.memory_store.snapshot()[0]
         assert list(runtime.memory_store.topics_dir.glob("*.md")) == []
 
 
@@ -351,7 +354,11 @@ def test_managed_runtime_builds_independent_extraction_client_by_default(tmp_pat
         assert runtime.wait_for_memory(3)
         assert runtime.drain_memory_events()[0]["status"] == "no_change"
         assert len(clients) == 2 and clients[1].closed and not clients[0].closed
-        assert {t["function"]["name"] for t in clients[1].requests[0]["tools"]} == {"read_memory", "write_topic"}
+        assert {t["function"]["name"] for t in clients[1].requests[0]["tools"]} == {
+            "read_memory",
+            "write_topic",
+            "write_core",
+        }
     assert all(client.closed for client in clients)
 
 
@@ -416,3 +423,93 @@ def test_completed_turn_creates_global_topic_and_new_session_reads_it(tmp_path):
         assert "ORBIT-934" in front.requests[2]["messages"][-1]["content"]
         assert runtime.wait_for_memory(3)
         assert runtime.drain_memory_events()[0]["status"] == "no_change"
+
+
+def test_completed_turn_saves_core_for_first_request_in_new_session(tmp_path):
+    """验证后台核心落盘后，新会话首请求直接携带常驻信息。
+
+    作用:
+        从真实 Runtime 成功回合走通后台写入及新会话上下文加载。
+        脚本模型只验证执行链，不用于声称真实模型能够正确分类姓名。
+
+    参数:
+        tmp_path: 隔离目录。
+
+    返回:
+        None。
+
+    行为说明:
+        1. 第一个回合结束后，通过后台 write_core 写入称呼并核对来源。
+        2. 等待完成后新建会话，首请求直接包含核心且无需执行 read_memory。
+        3. 原始前台会话不包含后台工具调用或合成记忆正文。
+    """
+    fact = "用户希望被称为测试称呼 LYRA-275。"
+    extract_models = [
+        Model([tool("write_core", {"content": fact}), {"content": '{"status":"completed"}'}]),
+        Model([{"content": '{"status":"no_change"}'}]),
+    ]
+    factories = iter(extract_models)
+    front = Model([{"content": "好的"}, {"content": "我知道你的称呼"}])
+    with create_runtime(
+        model=front,
+        db_path=tmp_path / "sessions.db",
+        memory_dir=tmp_path / "memory",
+        extraction_model_factory=lambda: next(factories),
+    ) as runtime:
+        first = runtime.respond("以后叫我测试称呼")
+        assert runtime.wait_for_memory(3)
+        event = runtime.drain_memory_events()[0]
+        assert event["status"] == "completed"
+        assert event["core_additions"] == 1 and event["topic_ids"] == []
+        assert event["source"]["turn_id"] == first.turn_id
+        assert event["source"]["session_id"] == first.session_id
+        message_id = runtime.session_details()["turns"][0]["user_message_id"]
+        assert event["source"]["message_id"] == message_id
+        assert message_id in runtime.memory_store.core_path.read_text()
+        assert len(runtime.history()) == 3
+        assert "write_core" not in json.dumps(runtime.history(), ensure_ascii=False)
+        assert "LYRA-275" not in json.dumps(runtime.history(), ensure_ascii=False)
+        assert fact not in references(front.requests[0])[0]
+        runtime.new_session()
+        second = runtime.respond("我叫什么？")
+        assert second.tool_results == []
+        assert len(front.requests) == 2
+        assert fact in references(front.requests[1])[0]
+        assert all(message["role"] != "tool" for message in front.requests[1]["messages"])
+        assert runtime.wait_for_memory(3)
+        assert runtime.drain_memory_events()[0]["status"] == "no_change"
+
+
+def test_background_core_write_deduplicates_foreground_explicit_memory(tmp_path):
+    """验证前台显式保存后，后台自动保存相同正文不会重复追加。
+
+    作用:
+        确认两个保存入口复用同一存储去重规则并报告真实变化。
+
+    参数:
+        tmp_path: 隔离目录。
+
+    返回:
+        None。
+
+    行为说明:
+        1. 前台执行 remember，回合结束后后台执行相同正文的 write_core。
+        2. 核对前台保存成功、后台无新增以及文件仅保留一份正文。
+    """
+    fact = "默认称呼用户为测试名字。"
+    front = Model([tool("remember", {"content": fact}), {"content": "已保存"}])
+    background = Model([tool("write_core", {"content": fact}), {"content": '{"status":"completed"}'}])
+    with create_runtime(
+        model=front,
+        db_path=tmp_path / "sessions.db",
+        memory_dir=tmp_path / "memory",
+        extraction_model_factory=lambda: background,
+    ) as runtime:
+        result = runtime.respond("请记住我的称呼")
+        assert result.tool_results[0].value["status"] == "saved"
+        assert runtime.wait_for_memory(3)
+        event = runtime.drain_memory_events()[0]
+        assert event["status"] == "no_change"
+        assert event["core_additions"] == 0 and event["topic_ids"] == []
+        assert runtime.memory_store.snapshot()[0].count(fact) == 1
+        assert json.loads(background.requests[1]["messages"][-1]["content"])["status"] == "duplicate"

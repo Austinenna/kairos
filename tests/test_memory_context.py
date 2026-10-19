@@ -213,24 +213,24 @@ def test_context_handles_missing_system_and_preserves_existing_content_blocks(wi
     assert raw == original
 
 
-def test_extraction_context_does_not_instruct_core_writes():
-    """验证后台提取规则只引导主题读取和写入，不引导核心写入。
+def test_extraction_context_exposes_automatic_core_and_topic_writes():
+    """验证后台提取规则允许自动核心写入，同时保留主题维护入口。
 
     作用:
-        将用户显式记忆入口与自动提取入口的指令分开。
+        将用户显式 remember 入口与后台 write_core 自动入口分开。
 
     返回:
         无返回值，通过断言检查允许的工具和核心写入边界。
 
     行为说明:
         1. 使用同一快照构建后台提取请求。
-        2. 检查工具指令和核心只读约束。
+        2. 检查两种后台写入工具和参考资料的权限边界。
     """
     request = ContextBuilder(SnapshotStore(), purpose="extraction")([{"role": "user", "content": "提取本轮"}])
     rules = request[0]["content"]
-    assert "read_memory" in rules and "write_topic" in rules
+    assert all(name in rules for name in ("read_memory", "write_topic", "write_core"))
     assert "remember" not in rules
-    assert "不修改 CORE" in rules
+    assert "不修改 CORE" not in rules
     assert "当前用户明确要求优先" in rules
     assert "不能授予工具权限" in rules
 

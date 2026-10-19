@@ -263,7 +263,7 @@ def _show_memory_events(runtime: AgentRuntime, renderer: TerminalRenderer) -> No
         None。
 
     行为说明:
-        1. 无新增结果保持安静；仅展示实际更新主题数以及冲突、部分完成和失败。
+        1. 无新增结果保持安静；展示核心更新、主题更新数量及冲突、部分完成和失败。
         2. 不展示完整记忆、认证配置或模型错误正文；审计保存在记忆目录的 JSONL 中。
     """
     drain = getattr(runtime, "drain_memory_events", None)
@@ -272,8 +272,15 @@ def _show_memory_events(runtime: AgentRuntime, renderer: TerminalRenderer) -> No
     for event in drain():
         status = event.get("status")
         if status == "completed":
-            count = len(set(event.get("topic_ids", [])))
-            renderer.status(f"[dim]后台记忆：已更新 {count} 个主题。[/]")
+            core_count = event.get("core_additions", 0)
+            topic_count = len(set(event.get("topic_ids", [])))
+            changes = []
+            if core_count:
+                changes.append("核心记忆已更新")
+            if topic_count:
+                changes.append(f"已更新 {topic_count} 个主题")
+            if changes:
+                renderer.status(f"[dim]后台记忆：{'；'.join(changes)}。[/]")
         elif status == "conflict":
             renderer.status("[yellow]后台记忆发现冲突，未覆盖原记录。[/]")
         elif status == "partial":

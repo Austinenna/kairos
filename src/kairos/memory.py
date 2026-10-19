@@ -457,20 +457,20 @@ class MemoryStore:
             return core, self._rebuild_index(self._topics())
 
     def remember(self, content: str, *, source: dict[str, str]) -> dict[str, Any]:
-        """将用户明确要求记住的内容追加到核心记忆。
+        """将已选定的新增内容追加到核心记忆。
 
         作用:
-            由主 Agent 的 remember 工具调用，不用于自动提取或覆盖旧事实。
+            供前台显式 remember 与后台 write_core 共用，不覆盖旧事实。
 
         参数:
-            content: 用户明确要求保存的原文或忠实表述。
+            content: 用户明确要求保存的内容，或后台筛选出的常驻信息。
             source: 运行时绑定的真实用户消息来源。
 
         返回:
             status 为 saved 或 duplicate，附带内容及来源（dict[str, Any]）。
 
         行为说明:
-            1. 模型负责语义查重；程序只防完全相同文本再次追加。
+            1. 调用方负责显式或自动筛选及语义查重；程序只防完全相同文本再次追加。
             2. 每次重读 CORE，追加成功后下一次 snapshot 即可看到。
         """
         content = _nonempty(content, "content")

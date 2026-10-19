@@ -256,7 +256,7 @@ def test_history_tools_are_not_granted_to_background_extraction(tmp_path):
     """验证前台历史工具不会扩大后台提取器的权限。
 
     作用:
-        在不改变记忆实现的前提下，检查后台仍只拥有原有两个记忆工具。
+        检查后台只拥有核心和主题记忆工具，不获得历史会话查询能力。
 
     参数:
         tmp_path: 隔离数据库与记忆目录。
@@ -283,6 +283,7 @@ def test_history_tools_are_not_granted_to_background_extraction(tmp_path):
         }
         assert {item["function"]["name"] for item in extraction.requests[0]["tools"]} == {
             "read_memory",
+            "write_core",
             "write_topic",
         }
         assert "error" in json.loads(extraction.requests[1]["messages"][-1]["content"])

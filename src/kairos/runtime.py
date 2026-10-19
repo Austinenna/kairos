@@ -565,6 +565,7 @@ class AgentRuntime:
                     "event": "memory_extraction",
                     "status": "failed",
                     "source": dict(source),
+                    "core_additions": 0,
                     "error_code": type(error).__name__,
                     "topic_ids": [],
                 }

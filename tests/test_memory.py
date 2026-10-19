@@ -13,6 +13,7 @@ from kairos.memory import MemoryIndexUpdateError, MemoryStore
 from kairos.memory_tools import (
     EXTRACTION_MEMORY_TOOL_SCHEMAS,
     PRIMARY_MEMORY_TOOL_SCHEMAS,
+    WRITE_CORE_TOOL_SCHEMA,
     WRITE_TOPIC_TOOL_SCHEMA,
 )
 
@@ -374,14 +375,29 @@ def test_in_process_parallel_appends_do_not_lose_entries(tmp_path):
 
 
 def test_tool_sets_separate_primary_and_extraction_permissions():
+    """验证前台显式保存与后台自动保存分别暴露对应工具。
+
+    作用:
+        防止新增后台核心入口扩大前台权限或开放模型填写来源。
+
+    返回:
+        None。
+
+    行为说明:
+        1. 核对前台和后台工具集合，以及两个写入入口的受控参数。
+    """
     primary = {tool["function"]["name"] for tool in PRIMARY_MEMORY_TOOL_SCHEMAS}
     extraction = {tool["function"]["name"] for tool in EXTRACTION_MEMORY_TOOL_SCHEMAS}
 
     assert primary == {"remember", "read_memory"}
-    assert extraction == {"read_memory", "write_topic"}
+    assert extraction == {"read_memory", "write_topic", "write_core"}
     parameters = WRITE_TOPIC_TOOL_SCHEMA["function"]["parameters"]
     assert set(parameters["required"]) == {"topic_id", "title", "description", "addition"}
     assert parameters["additionalProperties"] is False
+    core_parameters = WRITE_CORE_TOOL_SCHEMA["function"]["parameters"]
+    assert set(core_parameters["properties"]) == {"content"}
+    assert core_parameters["required"] == ["content"]
+    assert core_parameters["additionalProperties"] is False
     assert "source" not in json.dumps(PRIMARY_MEMORY_TOOL_SCHEMAS + EXTRACTION_MEMORY_TOOL_SCHEMAS)
 
 

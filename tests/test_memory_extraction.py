@@ -189,13 +189,112 @@ def test_create_uses_runtime_source_only_and_records_safe_metadata(store):
     assert result["usage"][1]["prompt_tokens"] is None
     assert result["request_count"] == 2
     for request in model.requests:
-        assert {tool["function"]["name"] for tool in request["tools"]} == {"read_memory", "write_topic"}
+        assert {tool["function"]["name"] for tool in request["tools"]} == {"read_memory", "write_topic", "write_core"}
         assert "CORE.md 完整正文" in str(request["messages"])
         assert "MEMORY.md 完整根索引" in str(request["messages"])
     record = (store.root / "extraction.jsonl").read_text()
     for secret in ("PERSONAL_TOPIC_BODY", "PRIVATE_USAGE", "PRIVATE_SUMMARY", "十年 Python", "学习背景"):
         assert secret not in record
     assert json.loads(record)["status"] == "completed"
+
+
+def test_core_only_write_binds_source_refreshes_request_and_records_safe_metadata(store):
+    """验证后台核心写入真实落盘、来源绑定及续轮读取最新正文。
+
+    作用:
+        覆盖自动提取选择核心后的实际执行链，不用脚本模型证明语义分类。
+
+    参数:
+        store: 使用隔离目录的真实记忆存储。
+
+    返回:
+        None。
+
+    行为说明:
+        1. 通过真实后台工具保存核心并核对实际写入计数与程序来源。
+        2. 检查第二次请求已经携带新核心，审计文件只记录受控元数据。
+    """
+    fact = "PRIVATE_CORE_BODY"
+    model = FakeModel([call("write_core", {"content": fact}), final("completed")])
+    result = run_job(store, model)
+
+    assert result["status"] == "completed"
+    assert result["core_additions"] == 1
+    assert result["topic_ids"] == []
+    core, _ = store.snapshot()
+    assert fact in core
+    assert list(store.topics_dir.glob("*.md")) == []
+    persisted = store.core_path.read_text()
+    for key, value in job(lambda: None).source.items():
+        assert f'"{key}": "{value}"' in persisted
+    assert fact not in model.requests[0]["messages"][1]["content"]
+    assert fact in model.requests[1]["messages"][1]["content"]
+    saved = json.loads(model.requests[1]["messages"][-1]["content"])
+    assert saved["status"] == "saved" and saved["source"] == result["source"]
+    record = (store.root / "extraction.jsonl").read_text()
+    assert fact not in record
+    assert json.loads(record)["core_additions"] == 1
+
+
+def test_repeated_core_writes_count_only_actual_additions(store):
+    """验证核心重复写入不制造新增或错误的完成状态。
+
+    作用:
+        保持工具去重结果、后台统计和文件内容一致。
+
+    参数:
+        store: 使用隔离目录的真实记忆存储。
+
+    返回:
+        None。
+
+    行为说明:
+        1. 同一任务写入相同正文两次，只统计第一次。
+        2. 后续任务再次写入，必须报告无变化且不改写来源。
+    """
+    fact = "用户希望被称为测试称呼。"
+    model = FakeModel(
+        [call("write_core", {"content": fact}), call("write_core", {"content": fact}, "duplicate"), final("completed")]
+    )
+    first = run_job(store, model)
+    original = store.core_path.read_bytes()
+    assert first["status"] == "completed" and first["core_additions"] == 1
+    assert store.snapshot()[0].count(fact) == 1
+    assert json.loads(model.requests[2]["messages"][-1]["content"])["status"] == "duplicate"
+    repeated = run_job(store, FakeModel([call("write_core", {"content": fact}), final("completed")]))
+    assert repeated["status"] == "no_change" and repeated["core_additions"] == 0
+    assert repeated["topic_ids"] == []
+    assert store.core_path.read_bytes() == original
+
+
+def test_core_and_topic_writes_share_one_completed_result(store):
+    """验证同一后台任务可以分别保存常驻核心和主题详情。
+
+    作用:
+        防止增加核心入口后丢失原有主题流程或混淆两种写入统计。
+
+    参数:
+        store: 使用隔离目录的真实记忆存储。
+
+    返回:
+        None。
+
+    行为说明:
+        1. 依次执行核心和主题写入，并核对两个文件的独立正文。
+    """
+    model = FakeModel(
+        [
+            call("write_core", {"content": "核心里的称呼"}),
+            call("write_topic", new_topic("主题里的项目经历"), "topic"),
+            final("completed"),
+        ]
+    )
+    result = run_job(store, model)
+    assert result["status"] == "completed"
+    assert result["core_additions"] == 1 and len(result["topic_ids"]) == 1
+    assert "核心里的称呼" in store.snapshot()[0]
+    assert "主题里的项目经历" not in store.snapshot()[0]
+    assert store.read_topic(result["topic_ids"][0])["content"] == "主题里的项目经历"
 
 
 def test_existing_topic_requires_read_before_append(store):
@@ -219,7 +318,7 @@ def test_existing_topic_requires_read_before_append(store):
 @pytest.mark.parametrize(
     "name,arguments", [("remember", {"content": "不能修改CORE"}), ("add_todo", {"title": "不能执行"})]
 )
-def test_background_cannot_run_core_or_business_tools(store, name, arguments):
+def test_background_cannot_run_primary_remember_or_business_tools(store, name, arguments):
     before = store.snapshot()
     model = FakeModel([call(name, arguments), final("completed")])
     result = run_job(store, model)
@@ -228,11 +327,31 @@ def test_background_cannot_run_core_or_business_tools(store, name, arguments):
     assert store.snapshot() == before
 
 
-def test_model_cannot_supply_source(store):
-    model = FakeModel([call("write_topic", {**new_topic(), "source": {"message_id": "spoofed"}}), final("completed")])
+@pytest.mark.parametrize("name,arguments", [("write_topic", new_topic()), ("write_core", {"content": "伪造来源"})])
+def test_model_cannot_supply_source(store, name, arguments):
+    """验证后台两种写入入口都不能接受模型伪造来源。
+
+    作用:
+        确认来源仅由已完成回合绑定，模型参数不能覆盖追溯身份。
+
+    参数:
+        store: 使用隔离目录的真实记忆存储。
+        name: 后台写入工具名。
+        arguments: 工具的合法业务参数。
+
+    返回:
+        None。
+
+    行为说明:
+        1. 额外提供伪造 source，核对工具失败且两个存储层均不变化。
+    """
+    before = store.snapshot()
+    model = FakeModel([call(name, {**arguments, "source": {"message_id": "spoofed"}}), final("completed")])
     result = run_job(store, model)
     assert result["status"] == "failed"
     assert result["topic_ids"] == []
+    assert result["core_additions"] == 0
+    assert store.snapshot() == before
     assert not list((store.root / "topics").glob("*.md"))
 
 
@@ -262,6 +381,17 @@ def test_existing_or_duplicate_results_are_not_counted_as_written(store):
         ([call("write_topic", new_topic()), RuntimeError("PRIVATE_RAW_ERROR")], "partial", "extraction_failed"),
         ([call("write_topic", new_topic()), final("conflict")], "partial", "memory_conflict"),
         ([call("write_topic", new_topic()), call("remember", {"content": "no"}), final()], "partial", "tool_failed"),
+        (
+            [call("write_core", {"content": "已落盘核心"}), RuntimeError("PRIVATE_RAW_ERROR")],
+            "partial",
+            "extraction_failed",
+        ),
+        ([call("write_core", {"content": "已落盘核心"}), final("conflict")], "partial", "memory_conflict"),
+        (
+            [call("write_core", {"content": "已落盘核心"}), call("remember", {"content": "no"}), final()],
+            "partial",
+            "tool_failed",
+        ),
     ],
 )
 def test_noop_failure_and_partial_write_statuses(store, responses, status, code):
@@ -384,7 +514,24 @@ def test_close_drains_active_and_queued_jobs(store):
         closer.join(3)
 
 
-def test_log_failure_is_visible_to_main_thread(store, monkeypatch):
+@pytest.mark.parametrize("save_core", [False, True])
+def test_log_failure_is_visible_to_main_thread(store, monkeypatch, save_core):
+    """验证审计失败按实际核心落盘情况报告失败或部分完成。
+
+    作用:
+        避免日志不可写时把已保存的核心记忆误报为完全没有执行。
+
+    参数:
+        store: 使用隔离目录的真实记忆存储。
+        monkeypatch: 临时替换审计写入。
+        save_core: 是否在审计失败前实际保存核心。
+
+    返回:
+        None。
+
+    行为说明:
+        1. 模拟审计失败，检查前台事件和已落盘核心保持一致。
+    """
     extractor = MemoryExtractor(store)
 
     def fail_record(_):
@@ -392,10 +539,15 @@ def test_log_failure_is_visible_to_main_thread(store, monkeypatch):
 
     monkeypatch.setattr(extractor, "_record", fail_record)
     try:
-        extractor.submit(job(lambda: FakeModel([final()])))
+        responses = (
+            [call("write_core", {"content": "日志失败前已保存"}), final("completed")] if save_core else [final()]
+        )
+        extractor.submit(job(lambda: FakeModel(responses)))
         assert extractor.wait(3)
         event = extractor.drain_events()[0]
-        assert event["status"] == "failed"
+        assert event["status"] == ("partial" if save_core else "failed")
+        assert event["core_additions"] == int(save_core)
+        assert ("日志失败前已保存" in store.snapshot()[0]) == save_core
         assert event["error_code"] == "result_record_failed"
     finally:
         extractor.close()

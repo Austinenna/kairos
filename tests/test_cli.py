@@ -1,8 +1,37 @@
 from types import SimpleNamespace
 
-from kairos.cli import run
+from kairos.cli import _show_memory_events, run
 from kairos.runtime import AgentTurnResult, create_runtime
 from kairos.terminal_input import TerminalInputUnsupportedError
+
+
+def test_memory_events_report_core_and_topics_without_false_zero_updates():
+    """验证后台结果区分核心与主题更新，并保持无新增安静。
+
+    作用:
+        防止仅保存核心时终端误报更新了零个主题，兼容旧事件没有核心计数。
+
+    返回:
+        None，通过捕获输出核对实际更新提示。
+
+    行为说明:
+        1. 分别提供核心、主题、混合、重复和无实际写入的完成事件。
+        2. 只展示三次实际更新，不展示正文或无新增通知。
+    """
+    events = [
+        {"status": "completed", "core_additions": 1, "topic_ids": []},
+        {"status": "completed", "topic_ids": ["topic-1", "topic-1"]},
+        {"status": "completed", "core_additions": 2, "topic_ids": ["topic-1", "topic-2"]},
+        {"status": "no_change", "core_additions": 0, "topic_ids": []},
+        {"status": "completed", "core_additions": 0, "topic_ids": []},
+    ]
+    output = []
+    _show_memory_events(SimpleNamespace(drain_memory_events=lambda: events), SimpleNamespace(status=output.append))
+    assert output == [
+        "[dim]后台记忆：核心记忆已更新。[/]",
+        "[dim]后台记忆：已更新 1 个主题。[/]",
+        "[dim]后台记忆：核心记忆已更新；已更新 2 个主题。[/]",
+    ]
 
 
 class FakeConsole:
