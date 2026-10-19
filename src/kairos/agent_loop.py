@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 from time import perf_counter
 from typing import Any, Protocol, runtime_checkable
 
+from .cancellation import current_cancellation_token, raise_if_cancelled
 from .images import redact_images
 
 
@@ -121,6 +122,52 @@ def _execute_tool(tool_call: dict, tool_handlers: Mapping[str, ToolHandler]) -> 
         return _error_content(error)
 
 
+def _display_event(event: dict[str, Any]) -> dict[str, Any]:
+    """为界面投影不携带上下文、思考和工具载荷的事件。
+
+    作用:
+        将完整 observer 与入口展示分开，避免把模型请求和私人记忆交给各入口广播。
+    参数:
+        event: 已附带执行关联 ID、图片已脱敏的循环事件。
+    返回:
+        仅含事件类别、关联位置、统计和安全错误类型的独立字典。
+    行为说明:
+        1. model_request 只保留阶段与关联信息，model_response 不转发完整 response。
+        2. 工具参数、结果及错误原文留给 logger；展示只保留工具名称与执行位置。
+        3. 用量仅保留已知计数字段，不透传供应商追加字段。
+    """
+    allowed = (
+        "event",
+        "request_number",
+        "tool_round",
+        "session_id",
+        "turn_id",
+        "step_id",
+        "message_id",
+        "tool_call_id",
+        "tool_name",
+        "duration_ms",
+    )
+    displayed = {name: event[name] for name in allowed if name in event}
+    usage = event.get("usage")
+    if isinstance(usage, Mapping):
+        displayed["usage"] = {
+            name: value
+            for name in (
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "cached_input_tokens",
+                "reasoning_tokens",
+            )
+            if (value := usage.get(name)) is None or (type(value) is int and value >= 0)
+        }
+    error = event.get("error")
+    if isinstance(error, Mapping) and isinstance(error.get("type"), str):
+        displayed["error"] = {"type": error["type"]}
+    return displayed
+
+
 def run_agent_turn(
     messages: list[dict],
     model: Model,
@@ -141,12 +188,13 @@ def run_agent_turn(
 
     参数:
         messages: 当前模型消息列表；函数会原地追加助手消息和工具结果。
-        model: 提供 complete() 的模型；传入 on_event 且支持 stream() 时使用流式接口。
+        model: 提供 complete() 的模型；配置展示回调或取消作用域且支持 stream() 时使用流式接口。
         tool_handlers: 工具名称到执行函数的映射。
         tool_schemas: 发给模型的工具定义列表。
         max_tool_rounds: 大于等于 1；限制包含工具调用的模型响应轮数，一批多个工具只计一轮。
         logger: 可选日志回调，接收图片已脱敏的完整请求、响应、错误和工具结果事件。
-        on_event: 可选展示回调，额外实时接收 text_delta；正文片段不写入 logger。
+        on_event: 可选展示回调，接收白名单阶段、关联及用量字段和实时 text_delta；
+            不接收原始模型请求、完整响应、工具载荷或错误原文，正文片段不写入 logger。
         recorder: 可选执行记录器，负责 ID 关联和持久化；省略时仅维护内存历史。
         prepare_messages: 可选请求上下文构建函数，每次模型调用前接收原始历史并返回请求副本。
             构建函数不得修改原始历史；省略时沿用原始消息列表。
@@ -173,6 +221,8 @@ def run_agent_turn(
         3. 无工具调用时保存最终回答并结束；工具批次中断时区分未执行和结果未知，
            尝试补齐结果并记录步骤状态，已经发生的工具副作用不会由此撤销。
            持久化补写失败时传播保存异常，遗留记录交由显式恢复处理。
+        4. 使用当前取消作用域，在模型请求、正文与工具边界检查；同步工具执行期间
+           不强制停止。工具正常返回时先持久保存结果，再观察取消，避免丢失已有副作用。
     """
     if max_tool_rounds < 1:
         raise ValueError("max_tool_rounds 必须大于或等于 1")
@@ -184,7 +234,7 @@ def run_agent_turn(
         """为观察事件添加执行 ID 并清理图片载荷。
 
         作用:
-            将循环事件依次发送给日志和展示回调，避免观察数据包含图片 Base64。
+            完整观察事件交给日志，展示回调仅收到白名单字段。
 
         参数:
             event: 待发送的事件字典，例如 {"event": "model_request", "request_number": 1}。
@@ -194,7 +244,7 @@ def run_agent_turn(
 
         行为说明:
             1. 配置了 recorder 时加入当前会话、回合及步骤 ID，再生成图片脱敏副本。
-            2. 先调用 logger，再调用 on_event；本函数不另行保存模型历史。
+            2. 先调用 logger，再向 on_event 发送展示投影；不改写日志和持久历史。
         """
 
         if recorder:
@@ -203,7 +253,7 @@ def run_agent_turn(
         if logger:
             logger(event)
         if on_event:
-            on_event(event)
+            on_event(_display_event(event))
 
     def text_delta(text: str) -> None:
         """将正文片段及其执行位置交给展示回调。
@@ -222,6 +272,7 @@ def run_agent_turn(
             2. 加入请求序号和可用的执行 ID，脱敏后交给 on_event，不逐片写入持久历史。
         """
 
+        raise_if_cancelled()
         if text and on_event:
             on_event(
                 redact_images(
@@ -235,6 +286,7 @@ def run_agent_turn(
             )
 
     while True:
+        raise_if_cancelled()
         request_number += 1
         if recorder:
             recorder.start_step(request_number)
@@ -254,11 +306,15 @@ def run_agent_turn(
 
             model_started = perf_counter()
             try:
-                if on_event is not None and isinstance(model, StreamingModel):
+                raise_if_cancelled()
+                if (on_event is not None or current_cancellation_token() is not None) and isinstance(
+                    model, StreamingModel
+                ):
                     response = model.stream(messages=request_messages, tools=tool_schemas, on_text=text_delta)
                 else:
                     response = model.complete(messages=request_messages, tools=tool_schemas)
                     text_delta(response.get("content") or "")
+                raise_if_cancelled()
             except (Exception, KeyboardInterrupt) as error:
                 emit(
                     {
@@ -283,6 +339,7 @@ def run_agent_turn(
                     "duration_ms": duration_ms,
                 }
             )
+            raise_if_cancelled()
             tool_calls = response.get("tool_calls") or []
             if not tool_calls:
                 final_content = response.get("content") or ""
@@ -312,6 +369,7 @@ def run_agent_turn(
                     recorder.append_assistant(assistant)
                 messages.append(assistant)
                 for tool_call in tool_calls:
+                    raise_if_cancelled()
                     function = tool_call.get("function", {})
                     result_started = perf_counter()
                     if recorder:
@@ -335,6 +393,8 @@ def run_agent_turn(
                             **({"message_id": message_id} if message_id else {}),
                         }
                     )
+                    # 结果已经落盘再停止；不能把执行成功的同步工具误记为结果未知。
+                    raise_if_cancelled()
             except (Exception, KeyboardInterrupt):
                 # 执行、保存或展示中断时，补齐已保存的整批调用；恢复只能加载结果，不能重跑工具。
                 completed = {m["tool_call_id"] for m in messages[batch_start + 1 :] if m["role"] == "tool"}

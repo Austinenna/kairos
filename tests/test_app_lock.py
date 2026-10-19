@@ -5,10 +5,11 @@ import os
 import stat
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
-from kairos import cli, config, main
+from kairos import cli, config, main, program
 from kairos.app_lock import AppAlreadyRunning, application_lock
 
 CHILD_SCRIPT = """
@@ -183,6 +184,73 @@ def test_cli_holds_lock_while_run_executes(tmp_path, monkeypatch):
         2. main 返回后可以再次加锁。
     """
     calls = []
+    selected = []
+
+    class Service:
+        """将核心替换为无网络对象，保留真实程序装配和文件锁。"""
+
+        def __init__(self, *args, **kwargs):
+            """接受实际服务参数；本测试不创建模型。
+
+            作用:
+                为实际程序入口提供不访问网络的隔离替身。
+            参数:
+                args: 服务构造的位置参数。
+                kwargs: 服务构造或会话选择选项。
+            返回:
+                None。
+            行为说明:
+                1. 资源管理仍由被测程序执行，替身不操作个人数据。
+            """
+
+        def client(self, source, **kwargs):
+            """记录入口会话选择并返回独立客户端。
+
+            作用:
+                为实际程序入口提供不访问网络的隔离替身。
+            参数:
+                source: 入口来源标识。
+                kwargs: 服务构造或会话选择选项。
+            返回:
+                合成客户端。
+            行为说明:
+                1. 资源管理仍由被测程序执行，替身不操作个人数据。
+            """
+            selected.append((source, kwargs))
+            return SimpleNamespace(close=lambda: None)
+
+        def cancel_all(self):
+            """合成服务没有待取消任务。
+
+            作用:
+                为实际程序入口提供不访问网络的隔离替身。
+            返回:
+                None。
+            行为说明:
+                1. 资源管理仍由被测程序执行，替身不操作个人数据。
+            """
+
+        def stop_accepting(self):
+            """合成服务不接受新任务。
+
+            作用:
+                为实际程序入口提供不访问网络的隔离替身。
+            返回:
+                None。
+            行为说明:
+                1. 资源管理仍由被测程序执行，替身不操作个人数据。
+            """
+
+        def close(self):
+            """合成服务没有外部资源。
+
+            作用:
+                为实际程序入口提供不访问网络的隔离替身。
+            返回:
+                None。
+            行为说明:
+                1. 资源管理仍由被测程序执行，替身不操作个人数据。
+            """
 
     def fake_run(**kwargs):
         """在 CLI 替身内检查锁状态。
@@ -202,10 +270,15 @@ def test_cli_holds_lock_while_run_executes(tmp_path, monkeypatch):
                 pytest.fail("CLI 未持有运行锁")
 
     monkeypatch.setattr(config, "get_app_dir", lambda: tmp_path)
+    monkeypatch.setattr(program, "ApplicationService", Service)
+    monkeypatch.setattr(
+        program, "Settings", lambda: SimpleNamespace(kairos_api_key="synthetic", kairos_channels=["terminal"])
+    )
     monkeypatch.setattr(cli, "run", fake_run)
     monkeypatch.setattr(sys, "argv", ["kairos", "--session", "example"])
     main()
-    assert calls == [{"session_id": "example", "resume_latest": False}]
+    assert selected == [("terminal", {"session_id": "example", "resume_latest": False})]
+    assert len(calls) == 1 and calls[0]["allow_detach"] is False
     with application_lock(tmp_path):
         pass
 
@@ -235,8 +308,8 @@ def test_occupied_cli_reports_error_and_exits_nonzero(tmp_path, monkeypatch, cap
             main()
     assert error.value.code == 1
     output = capsys.readouterr()
-    assert output.out == ""
-    assert output.err == "另一个 Kairos 入口正在使用此数据目录，请先关闭再启动\n"
+    assert "另一个 Kairos 程序" in output.out
+    assert str(tmp_path) not in output.out + output.err
 
 
 def test_cli_help_does_not_create_runtime_lock(tmp_path, monkeypatch, capsys):
@@ -266,45 +339,20 @@ def test_cli_help_does_not_create_runtime_lock(tmp_path, monkeypatch, capsys):
     assert not data_dir.exists()
 
 
-def test_other_cli_errors_propagate_and_release_lock(tmp_path, monkeypatch):
-    """验证共享锁不会吞掉 CLI 原有异常。
+def test_main_returns_program_failure_as_nonzero_exit(monkeypatch):
+    """将统一程序的失败状态转为命令行退出码。
 
     作用:
-        只转换入口占用错误，保持其他失败的原有语义。
-
+        程序层已负责脱敏和锁内收尾，main 不把失败当成正常退出。
     参数:
-        tmp_path: 隔离目录。
-        monkeypatch: 替换 CLI 与参数。
-
+        monkeypatch: 替换程序返回值与命令行参数。
     返回:
         None。
-
     行为说明:
-        1. CLI 替身抛出的异常原样传播，之后可以再次取得运行锁。
+        1. 资源失败时的实际持锁关闭在 test_program 中验证。
     """
-    failure = RuntimeError("synthetic CLI failure")
-
-    def failing_run(**kwargs):
-        """模拟 CLI 启动后的普通错误。
-
-        作用:
-            不启动真实终端，向 main 传播既有错误。
-        参数:
-            kwargs: main 的会话选项，本替身不使用。
-        返回:
-            不正常返回。
-        异常:
-            RuntimeError: 无条件抛出测试专用异常。
-        行为说明:
-            1. 抛出同一个异常对象，供测试核对未被包装或替换。
-        """
-        raise failure
-
-    monkeypatch.setattr(config, "get_app_dir", lambda: tmp_path)
-    monkeypatch.setattr(cli, "run", failing_run)
+    monkeypatch.setattr(program, "run", lambda **kwargs: 1)
     monkeypatch.setattr(sys, "argv", ["kairos"])
-    with pytest.raises(RuntimeError) as error:
+    with pytest.raises(SystemExit) as error:
         main()
-    assert error.value is failure
-    with application_lock(tmp_path):
-        pass
+    assert error.value.code == 1

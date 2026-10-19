@@ -245,11 +245,13 @@ def test_session_list_disambiguates_prefixes_and_escapes_titles():
     ],
 )
 def test_main_routes_session_arguments(monkeypatch, arguments, expected):
+    from kairos import program
+
     calls = []
     monkeypatch.setattr(cli.sys, "argv", ["kairos", *arguments])
-    monkeypatch.setattr(cli, "run", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(program, "run", lambda **kwargs: calls.append(kwargs) or 0)
     main()
-    assert calls == [expected]
+    assert calls == [{**expected, "channels": None}]
 
 
 def test_main_rejects_conflicting_session_options(monkeypatch, capsys):

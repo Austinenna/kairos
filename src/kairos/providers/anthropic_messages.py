@@ -5,7 +5,8 @@ from collections.abc import Callable, Mapping
 from copy import deepcopy
 from typing import Any
 
-from .common import field
+from ..cancellation import raise_if_cancelled
+from .common import cancellable_stream, field
 
 
 def anthropic_user_content(content: str | list[dict]) -> str | list[dict]:
@@ -374,15 +375,31 @@ class AnthropicMessagesModel:
         self.client = Anthropic(api_key=api_key, base_url=base_url)
 
     def complete(self, *, messages: list[dict], tools: list[dict]) -> dict:
+        raise_if_cancelled()
         response = self.client.messages.create(**self._request(messages, tools))
+        raise_if_cancelled()
         return normalize_anthropic_response(response)
 
     def stream(self, *, messages: list[dict], tools: list[dict], on_text: Callable[[str], None]) -> dict:
-        """即时发出正文，收齐并校验消息后返回可执行的工具调用。"""
+        """逐事件检查取消并发出正文，消息收齐后返回工具调用。
+
+        作用:
+            保持完整消息校验，并让无正文的 thinking、参数和 ping 阶段可以合作停止。
+        参数:
+            messages: 已组装的模型上下文。
+            tools: 可用工具定义。
+            on_text: 正文片段回调，不接收思考签名和工具参数。
+        返回:
+            完整、已校验的统一响应字典。
+        行为说明:
+            1. 每次读取 SDK 事件前后检查取消；阻塞读取需要等数据或超时。
+            2. 无论取消、校验失败或成功，都关闭 SDK 流。
+        """
+        raise_if_cancelled()
         response = self.client.messages.create(**self._request(messages, tools), stream=True)
         try:
             message = _MessageStream(on_text)
-            for event in response:
+            for event in cancellable_stream(response):
                 message.add(event)
             return message.result()
         finally:

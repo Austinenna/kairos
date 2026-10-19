@@ -5,7 +5,8 @@ from typing import Any
 
 from openai import OpenAI
 
-from .common import field, normalize_tool_calls
+from ..cancellation import raise_if_cancelled
+from .common import cancellable_stream, field, normalize_tool_calls
 
 
 def openai_user_content(content: str | list[dict]) -> str | list[dict]:
@@ -57,10 +58,12 @@ class OpenAICompatibleModel:
         self.client = client or OpenAI(api_key=api_key, base_url=base_url)
 
     def complete(self, *, messages: list[dict], tools: list[dict]) -> dict:
+        raise_if_cancelled()
         request = {"model": self.model, "messages": openai_messages(messages), "tools": tools}
         if self.extra_body is not None:
             request["extra_body"] = self.extra_body
         response = self.client.chat.completions.create(**request)
+        raise_if_cancelled()
         choices = field(response, "choices", [])
         if not choices:
             raise ValueError("模型响应没有 choices")
@@ -89,8 +92,24 @@ class OpenAICompatibleModel:
         return result
 
     def stream(self, *, messages: list[dict], tools: list[dict], on_text: Callable[[str], None]) -> dict:
-        """逐片交付正文，完整收完响应后才返回可供 Agent 执行的工具调用。"""
+        """逐片检查取消并交付正文，完整响应通过校验后才返回工具调用。
 
+        作用:
+            为 Agent 循环提供实时正文和最终完整响应，不执行未收齐的工具参数。
+        参数:
+            messages: 已组装的模型上下文。
+            tools: 可用工具定义。
+            on_text: 正文片段回调；thinking 与工具参数不会作为正文发送。
+        返回:
+            完整、已校验的统一响应字典。
+        异常:
+            ValueError: 收到非字符串正文或思考、旧式 function_call、结束后内容或冲突结束标记。
+        行为说明:
+            1. 每个 SDK 分片前后检查当前取消标记，包括没有正文的分片。
+            2. 任何结束路径都关闭 SDK 流；阻塞中的网络读取仍需等待返回或超时。
+        """
+
+        raise_if_cancelled()
         request: dict[str, Any] = {
             "model": self.model,
             "messages": openai_messages(messages),
@@ -108,7 +127,7 @@ class OpenAICompatibleModel:
         finish_reason: str | None = None
         usage: dict[str, Any] | None = None
         try:
-            for chunk in response_stream:
+            for chunk in cancellable_stream(response_stream):
                 chunk_usage = field(chunk, "usage")
                 if chunk_usage is not None:
                     usage = normalize_openai_usage(chunk_usage)

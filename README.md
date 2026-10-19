@@ -20,24 +20,29 @@ Kairos 是希腊语里“恰当的时机”。这个助手和普通聊天机器�
 
 ## 当前架构
 
-主程序只有一个对话入口，组件由统一运行时组装：
+主程序在一个进程中装配所启用的入口，统一应用层拥有 Runtime：
 
 ```text
-kairos 主入口
-  -> cli.run()                  CLI：输入、斜杠命令、展示
-  -> AgentRuntime.respond()    会话、模型、工具、数据库和日志的协调
-  -> run_agent_turn()           模型请求、工具执行和跨轮循环
-  -> providers/                 OpenAI 兼容或 Anthropic Messages 适配器
-  -> sessions.py + SQLite       会话、回合、步骤、消息和工具调用记录
-  -> tools.py                   按配置加载可选业务工具
-       -> kairos_todo/ + SQLite 当前默认启用的独立待办包
+kairos → program.run()：配置、入口装配、进程锁与收尾
+           ├─ cli.run(runtime=RuntimeClient)：终端输入与展示
+           └─ WeixinChannelRunner：微信接收、处理与投递
+                          ↓ 各自的 RuntimeClient
+                  ApplicationService：会话、请求、队列、结果路由
+                          ↓ 固定执行线程
+                  一个 AgentRuntime
+                          ├─ run_agent_turn() → providers/
+                          ├─ SessionStore / TurnRecorder → SQLite
+                          ├─ 全局记忆与独立后台提取
+                          └─ ToolRegistry → 可选业务工具（默认 kairos_todo）
 ```
+
+`program.py` 负责程序生命周期，`application.py` 负责跨入口调度和会话视图；入口不直接访问 Runtime 的活动消息或业务数据库。内部采用方法、队列和事件，没有本机 HTTP 接口。
 
 `src/kairos/runtime.py` 是应用的组装和协调边界：它根据 `Settings` 创建模型适配器，通过 `database.py` 打开 SQLite，通过 `tools.py` 加载配置指定的工具工厂，再组装会话存储、上下文与 Agent loop。核心不导入待办包，也不包含待办表结构或专用提示词。`sessions.py` 持久保存完整消息及 ID 关联，`execution.py` 在模型和工具的执行边界记录步骤。`src/kairos/cli.py` 只负责终端输入和命令，`src/kairos/terminal_renderer.py` 负责把结构化结果渲染为终端内容。
 
 交互输入由 `terminal_input.py` 的 prompt_toolkit 编辑器负责；提交后交给现有 Rich 流式输出。`clipboard.py` 封装 macOS 原生剪贴板读取，`images.py` 负责图片校验、处理、快照和摘要。普通管道和功能受限的终端保留文字输入。
 
-协议实现位于 `src/kairos/providers/`：`OpenAICompatibleModel`、`AnthropicMessagesModel` 和共享的响应转换逻辑分别放在独立模块中。主程序只通过 `runtime.create_runtime()` 创建运行时，不再保留一次性 Agent 包装入口。
+协议实现位于 `src/kairos/providers/`：`OpenAICompatibleModel`、`AnthropicMessagesModel` 和共享的响应转换逻辑分别放在独立模块中。主程序由应用服务的固定执行线程调用 `runtime.create_runtime()` 创建唯一运行时；公开工厂仍可用于隔离测试和独立代码调用。
 
 ### 上游 AI 网关
 
@@ -57,9 +62,9 @@ kairos 主入口
 
 回复使用统一浅色样式：代码块和 Mermaid 面板为浅灰背景、柔和语法高亮，行内代码为无底色深青文字，标题左对齐加粗、取消紫色和下划线。代码块标注语言，段落保留清晰留白。静态回答、流式重绘与最终全文共用这套样式；输入提示符和附件底栏独立保持原样。
 
-代码调用 `runtime.respond(prompt, on_event=handler)` 可接收 `text_delta`（`text`、`request_number`）及模型请求、响应、错误和工具结果事件。未传 `on_event` 时沿用完整响应接口；注入的模型只有 `complete()` 时会逐次展示完整模型响应。流式读取失败不会自动重跑整个回合。内置的 OpenAI／Anthropic 适配器在流式和非流式下使用相同的完整性检查：缺少结束标记、工具响应被截断或整批中任一工具参数不是完整 JSON 对象时，拒绝整次响应中的工具执行；纯文字的长度截断仍可展示并提示。
+代码调用 `runtime.respond(prompt, on_event=handler)` 可接收 `text_delta`（`text`、`request_number`）及模型请求、响应、错误和工具结果事件。展示事件只保留正文、阶段、执行关联与统计字段，不透传原始模型请求、完整响应或工具载荷；完整观察内容仍限显式 logger。未启用展示回调或合作取消时沿用完整响应接口；注入的模型只有 `complete()` 时会逐次展示完整模型响应。流式读取失败不会自动重跑整个回合。内置的 OpenAI／Anthropic 适配器在流式和非流式下使用相同的完整性检查：缺少结束标记、工具响应被截断或整批中任一工具参数不是完整 JSON 对象时，拒绝整次响应中的工具执行；纯文字的长度截断仍可展示并提示。
 
-Ctrl+C 或断流时，未完成模型响应不写入历史；已执行工具及其结果保留，工具副作用不会自动撤销。工具批次中断时给剩余调用补齐未执行或结果未确认标记。JSONL 日志和最终结果仍记录完整模型响应与工具结果，不逐片段重复保存正文。
+Ctrl+C 或断流时，未完成模型响应不写入历史；已执行工具及其结果保留，工具副作用不会自动撤销。工具批次中断时给剩余调用补齐未执行或结果未确认标记。显式 JSONL 日志和 Runtime 内部结果仍记录完整响应与工具结果；入口收到受控投影，不逐片段重复持久保存正文。
 
 尚未产生完整助手消息就失败的用户输入会从后续模型上下文撤回，但仍以 `in_context=false` 保存在 SQLite 中供检查。恢复会话时只修补未完成的记录并提示中断，不自动重跑模型或工具。
 
@@ -115,7 +120,7 @@ uv run kairos --session ID    # 恢复指定会话，支持唯一 ID 前缀
 
 代码调用可通过 `create_runtime(memory_dir=...)` 指定隔离记忆目录。测试还可使用 `memory_enabled=False` 或 `auto_memory=False`。注入主 `model` 或 `client` 时，后台默认不复用它们；要验证提取，显式传入返回独立模型的 `extraction_model_factory`。`wait_for_memory()` 等待后台，`drain_memory_events()` 读取完成状态。
 
-首版后台队列运行在当前进程中，正常关闭会收尾；进程异常退出后的任务恢复和跨进程并发协调尚未实现。
+记忆提取队列运行在当前进程中，正常关闭会收尾；记忆提取任务的异常退出恢复尚未实现。用户聊天请求由统一应用层另行持久化，不能将两种队列的恢复能力混为一谈。
 
 ## 图片输入
 
@@ -223,11 +228,24 @@ KAIROS_TOOL_FACTORIES=["kairos_todo.tools:build_tools"]
 - [ ] 阶段 7：评估与观测
 - [ ] 阶段 8：框架对比
 
-微信私聊文字入口已接入现有 Runtime：先退出 Kairos CLI，再用 `uv run python -m kairos.weixin run` 启动。首次可复用已验证的探针登录信息；微信独立保存会话绑定，共享全局记忆与当前启用的工具。支持 `/new`、`/session`、`/retry`、`/help`，只允许本人私聊文字。CLI 与微信入口共用运行锁，暂不同时运行。使用方式、恢复规则和实际验收结果见 [微信通道](docs/微信通道.md)。
+统一后台已完成单进程串行版改造：终端和微信是同级接入模块，共用 `ApplicationService` 管理的唯一 Runtime；内部使用队列和事件，不拆成三个进程，也不经过本机 HTTP。会话、请求和回复来源分别绑定，后台记忆与待办等业务数据继续共享。后续必须支持不同会话并行，同一会话有序是当前建议。职责图见 [统一后台设计](docs/统一后台设计.md)，实现与验收安排见 [统一后台改造计划](docs/统一后台改造计划.md)。
 
-正式架构方向已确认：建立独立于任何渠道的统一后台，终端、微信及未来网页、Mac 应用通过统一接口接入；后台独立启动，渠道单独启用。第一阶段先串行执行用户任务，后续必须支持并行。当前二选一只是临时实现，统一后台及拟议的 `kairos serve` 尚未实现；决定和启动方式见 [统一后台设计](docs/统一后台设计.md)。
+统一启动方式：
 
-最终工程改动与六阶段验收顺序见 [统一后台改造计划](docs/统一后台改造计划.md)：通用协议 → 执行核心 → HTTP 服务与客户端 → 终端迁移 → 微信连接器迁移 → 数据切换与端到端验收。该计划尚未执行。
+```bash
+# 沿用 ~/.kairos/.env 中的 KAIROS_CHANNELS，默认只启用终端
+uv run kairos
+
+# 本次在同一个进程中同时启用终端和微信
+uv run kairos --channels terminal,weixin
+
+# 仅运行微信模块，仍使用同一套程序和后台
+uv run kairos --channels weixin
+```
+
+也可在私有配置中设置 `KAIROS_CHANNELS=["terminal","weixin"]`，之后直接运行 `uv run kairos`。终端的 `--continue`、`--session ID` 只选择终端会话，不改变微信绑定。`/exit` 或输入结束停止整个程序；`/detach` 停用终端输入后让已启动的微信继续运行。模型生成时 Ctrl+C 只取消当前终端请求；正常退出等待收发、执行与记忆收尾，再释放进程锁。没有安装系统自启动，也不承诺关闭承载程序的终端窗口后继续在线。
+
+微信目前只接受本人私聊文字，支持 `/new`、`/session`、`/retry`、`/help`。首用可复用探针登录；凭据和游标保留在微信接入侧，发送失败只处理缓存答案，不重跑模型和工具。操作、恢复及实际验证结果见 [微信通道](docs/微信通道.md)。本轮通过 847 项离线测试和真实 PTY 的合成端到端验收；新版真实手机与上游模型联调尚未完成。旧 `python -m kairos.weixin run` 是仅微信模式的兼容命令，不要与另一 Kairos 进程同时启动；旧版本和探针需先退出。
 
 独立的[文字通路探针](docs/微信通路验证.md)继续保留为诊断工具，只回复指定口令，不调用模型；不要与正式微信入口同时运行。
 

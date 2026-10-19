@@ -65,6 +65,9 @@ class ToolSettings(BaseSettings):
 class Settings(ToolSettings):
     """在可选工具配置之外读取模型与认证配置。"""
 
+    # 同一个程序中启用的接入模块；不决定 Runtime 的进程或线程数量。
+    kairos_channels: list[Literal["terminal", "weixin"]] = Field(default_factory=lambda: ["terminal"], min_length=1)
+
     # 字段名不区分大小写地对应环境变量，例如 kairos_provider <- KAIROS_PROVIDER。
     kairos_provider: Literal["openai", "anthropic"] = "openai"
     # 网关项目 Key 不随请求协议变化。

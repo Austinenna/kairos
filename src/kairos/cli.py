@@ -6,6 +6,7 @@ Agent 循环由 ``kairos.runtime.AgentRuntime`` 统一管理。
 
 import sqlite3
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import openai
@@ -50,7 +51,8 @@ HELP = """\
   /think          开关思考模式（仅已接入的模型）
   /file 路径       把一个文本文件的内容作为你的消息发出去
   /reset          新建会话，保留 system 提示词和旧会话
-  /exit           退出（也可以按 Ctrl+D）
+  /exit           退出整个程序（也可以按 Ctrl+D）
+  /detach         停用终端交互，让同进程微信继续运行（需已启用微信）
 图片：Ctrl+V 粘贴图片，或拖入图片文件；编辑问题后 Enter 一起发送。
 在图片标签右侧按 Backspace 可以移除附件。
 生成过程中按 Ctrl+C 可以中断这一轮。"""
@@ -64,7 +66,9 @@ def run(
     input_editor: TerminalInput | None = None,
     session_id: str | None = None,
     resume_latest: bool = False,
-) -> None:
+    notice_reader: Callable[[], list[str]] | None = None,
+    allow_detach: bool = False,
+) -> str | None:
     """启动终端交互并连接会话命令与 Agent 运行时。
 
     作用:
@@ -78,9 +82,11 @@ def run(
         input_editor: 可选输入编辑器，read() 返回 InputDraft；退出时由本函数关闭。
         session_id: 启动时恢复的完整会话 ID 或唯一前缀，和 resume_latest 互斥。
         resume_latest: 为真时继续最近会话；没有可恢复会话时显示错误并退出。
+        notice_reader: 可选的本机入口状态读取器，只在终端线程中展示其结果。
+        allow_detach: 为真时允许 /detach 离开终端界面，保留程序中的其他入口。
 
     返回:
-        无返回值（None）。正常退出、输入结束或已处理的启动错误均结束函数。
+        正常退出返回 exit，仅停用终端返回 detach，启动失败返回 None。
 
     异常:
         ValueError: 本函数在以下位置显式抛出，随后由内部错误分支捕获并展示:
@@ -100,6 +106,7 @@ def run(
     renderer = TerminalRenderer(console)
     owns_runtime = runtime is None
     restore_draft: InputDraft | None = None
+    exit_reason = "exit"
     try:
         try:
             if session_id is not None and resume_latest:
@@ -144,6 +151,9 @@ def run(
             renderer.status("[dim]全局记忆已启用；每轮后台提取的用量单独记录，不计入前台费用统计。[/]")
 
         while True:
+            if notice_reader is not None:
+                for notice in notice_reader():
+                    renderer.status(f"[dim]{escape(notice)}[/]")
             _show_memory_events(runtime, renderer)
             try:
                 if input_editor is not None:
@@ -165,6 +175,11 @@ def run(
                 try:
                     if cmd == "/exit":
                         break
+                    elif cmd == "/detach":
+                        if allow_detach:
+                            exit_reason = "detach"
+                            break
+                        renderer.status("[dim]没有其他已启用入口；使用 /exit 退出程序。[/]")
                     elif cmd == "/help":
                         renderer.status(HELP)
                     elif cmd == "/history":
@@ -257,6 +272,7 @@ def run(
                 else:
                     restore_draft = submitted
                     renderer.status("[dim]草稿已恢复，可编辑后重新发送。[/]")
+        return exit_reason
     finally:
         if input_editor is not None:
             input_editor.close()

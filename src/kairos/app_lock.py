@@ -1,4 +1,4 @@
-"""让 CLI 和聊天通道串行占用同一份 Kairos 用户数据。"""
+"""保证一份 Kairos 用户数据由一个程序进程管理，进程内可同时启用多个入口。"""
 
 import fcntl
 import json
@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 class AppAlreadyRunning(RuntimeError):
-    """表示另一个入口已经持有用户数据目录的运行锁。"""
+    """表示另一个程序进程已经持有用户数据目录的运行锁。"""
 
 
 def _create_private_directory(directory: Path) -> None:
@@ -39,11 +39,11 @@ def _create_private_directory(directory: Path) -> None:
 
 @contextmanager
 def application_lock(data_dir: Path, label: str = "Kairos") -> Iterator[None]:
-    """独占用户数据目录直到当前入口退出。
+    """独占用户数据目录直到当前程序完成收尾。
 
     作用:
-        在 CLI 或微信通道启动 Runtime 前取得共享运行锁，避免两个入口同时
-        维护会话、记忆与数据库状态；运行时工厂本身仍可由隔离测试自由调用。
+        在统一程序启动 Runtime 前取得运行锁，避免不同进程同时维护会话、
+        记忆与数据库状态；同进程的终端和微信入口共用这一次加锁。
 
     参数:
         data_dir: 当前入口使用的数据目录；测试和隔离验收可传入临时目录。
@@ -53,7 +53,7 @@ def application_lock(data_dir: Path, label: str = "Kairos") -> Iterator[None]:
         持有排他文件锁的上下文管理器，进入时产出 None。
 
     异常:
-        AppAlreadyRunning: 已有另一个入口持有同一数据目录的运行锁。
+        AppAlreadyRunning: 已有另一个程序持有同一数据目录的运行锁。
 
     行为说明:
         1. 创建私有数据目录，以 0600 权限新建 .runtime.lock 文件。
@@ -67,7 +67,7 @@ def application_lock(data_dir: Path, label: str = "Kairos") -> Iterator[None]:
         try:
             fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise AppAlreadyRunning("另一个 Kairos 入口正在使用此数据目录，请先关闭再启动") from None
+            raise AppAlreadyRunning("另一个 Kairos 程序正在使用此数据目录；请在同一个程序中启用所需入口") from None
         try:
             stream.seek(0)
             stream.truncate()

@@ -1,40 +1,26 @@
 def main() -> None:
-    """解析会话启动参数并进入 CLI。
+    """解析参数并启动单进程多入口 Kairos。
 
     作用:
-        作为 kairos 命令入口读取进程参数，将新建或恢复的选择交给 cli.run()，
-        并在运行期间独占用户数据目录，避免 CLI 与微信通道同时使用它。
-
-    参数:
-        无显式参数；argparse 从 sys.argv 读取 --session ID 或 --continue，两者互斥。
-
+        将入口选择与终端会话选项交给统一程序，由其创建应用层和 Runtime。
     返回:
-        无返回值（None），CLI 正常结束后返回。
-
+        None，正常停止后返回。
     异常:
-        SystemExit: 其他入口正在使用此数据目录时，以状态码 1 退出。
-
+        SystemExit: 程序启动或运行失败时以非零状态退出。
     行为说明:
-        1. 创建参数解析器，参数合法性、互斥检查和帮助退出由 argparse 处理。
-        2. 参数解析完成后取得共享运行锁；帮助命令不创建运行锁。
-        3. 将 session_id 和 resume_latest 传入 CLI，由其负责会话创建、恢复及资源管理。
+        1. 帮助和参数互斥校验不读取用户配置或启动入口。
+        2. 未指定入口时读取配置中的 KAIROS_CHANNELS。
     """
-
     import argparse
-    import sys
 
-    from .app_lock import AppAlreadyRunning, application_lock
-    from .cli import run
-    from .config import get_app_dir
+    from .program import parse_channels, run
 
-    parser = argparse.ArgumentParser(description="Kairos：可以保存和恢复会话的个人助手")
+    parser = argparse.ArgumentParser(description="Kairos：同一程序中的终端和微信，共用会话与执行后台")
     sessions = parser.add_mutually_exclusive_group()
-    sessions.add_argument("--continue", dest="resume_latest", action="store_true", help="继续最近的会话")
-    sessions.add_argument("--session", dest="session_id", metavar="ID", help="恢复指定会话（支持唯一 ID 前缀）")
+    sessions.add_argument("--continue", dest="resume_latest", action="store_true", help="终端继续最近的会话")
+    sessions.add_argument("--session", dest="session_id", metavar="ID", help="终端恢复指定会话（支持唯一 ID 前缀）")
+    parser.add_argument("--channels", type=parse_channels, metavar="terminal,weixin", help="本次启用的入口，覆盖配置")
     args = parser.parse_args()
-    try:
-        with application_lock(get_app_dir(), label="Kairos CLI"):
-            run(session_id=args.session_id, resume_latest=args.resume_latest)
-    except AppAlreadyRunning as error:
-        print(str(error), file=sys.stderr)
-        raise SystemExit(1) from None
+    status = run(session_id=args.session_id, resume_latest=args.resume_latest, channels=args.channels)
+    if status:
+        raise SystemExit(status)

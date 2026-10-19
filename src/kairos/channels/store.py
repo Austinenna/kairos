@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS channel_inbox (
 CREATE INDEX IF NOT EXISTS channel_inbox_status ON channel_inbox(status, id);
 CREATE INDEX IF NOT EXISTS channel_inbox_conversation
     ON channel_inbox(channel, account_id, conversation_id, session_id, id);
+CREATE TABLE IF NOT EXISTS channel_request_links (
+    inbox_id INTEGER PRIMARY KEY REFERENCES channel_inbox(id),
+    request_id TEXT NOT NULL UNIQUE
+);
 """
 
 INTERRUPTED_REPLY = (
@@ -68,6 +72,7 @@ class StoredMessage:
     kind: str | None
     error_code: str | None
     parts: list[dict]
+    backend_request_id: str | None = None
 
 
 def _nonempty(value: str, label: str) -> str:
@@ -196,7 +201,7 @@ class ChannelStore:
             missing.append(parent)
             parent = parent.parent
         for directory in reversed(missing):
-            directory.mkdir(mode=0o700)
+            directory.mkdir(mode=0o700, exist_ok=True)
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
@@ -237,8 +242,7 @@ class ChannelStore:
             self.connection.rollback()
             raise
 
-    @staticmethod
-    def _stored(row: sqlite3.Row) -> StoredMessage:
+    def _stored(self, row: sqlite3.Row) -> StoredMessage:
         """把数据库行还原为独立记录。
 
         作用:
@@ -249,7 +253,11 @@ class ChannelStore:
             含统一输入和发送分段的 StoredMessage。
         行为说明:
             1. 每次解析新的分段列表，调用方修改不会直接改动存储。
+            2. 应用请求 ID 从新增关联表读取，不改旧表结构或历史 payload。
         """
+        link = self.connection.execute(
+            "SELECT request_id FROM channel_request_links WHERE inbox_id = ?", (row["id"],)
+        ).fetchone()
         return StoredMessage(
             id=row["id"],
             message=InboundMessage(
@@ -267,6 +275,7 @@ class ChannelStore:
             kind=row["kind"],
             error_code=row["error_code"],
             parts=json.loads(row["parts"]),
+            backend_request_id=link["request_id"] if link else None,
         )
 
     def checkpoint(self, channel: str, account: str) -> dict | None:
@@ -473,28 +482,57 @@ class ChannelStore:
             )
         ]
 
-    def claim(self, record_id: int, session_id: str) -> None:
-        """在调用 Runtime 前持久标记输入已经开始处理。
+    def claim(self, record_id: int, session_id: str, *, request_id: str | None = None) -> None:
+        """在提交应用请求前持久标记输入已经开始处理。
 
         作用:
             保证异常退出后这条输入不会再次自动执行模型或工具。
         参数:
             record_id: queued 记录 ID。
             session_id: 本次实际选择的内部会话。
+            request_id: 会产生后台操作时使用的稳定请求 ID；纯本地命令可为空。
         返回:
             None。
         异常:
             RuntimeError: 输入已不在 queued 状态。
         行为说明:
-            1. 只保存处理边界，不执行 Runtime。
+            1. 同一事务保存会话、处理边界及请求关联，不调用应用服务。
         """
         session_id = _nonempty(session_id, "session_id")
+        if request_id is not None:
+            request_id = _nonempty(request_id, "request_id")
         with self._transaction():
             if self.get(record_id).status != "queued":
                 raise RuntimeError("只有 queued 消息可以开始处理")
             self.connection.execute(
-                "UPDATE channel_inbox SET status = 'processing', session_id = ? WHERE id = ?", (session_id, record_id)
+                "UPDATE channel_inbox SET status = 'processing', session_id = ? WHERE id = ?",
+                (session_id, record_id),
             )
+            if request_id is not None:
+                self.connection.execute("INSERT INTO channel_request_links VALUES (?, ?)", (record_id, request_id))
+
+    def pending_requests(self, channel: str, account_id: str) -> list[StoredMessage]:
+        """读取需要与应用服务核对的处理中输入。
+
+        作用:
+            连接器重启后先恢复原请求，而不是重新执行或让后续 /new 越过它。
+        参数:
+            channel: 当前通道标识。
+            account_id: 当前机器人账号。
+        返回:
+            按接收顺序排列的 processing 记录列表。
+        行为说明:
+            1. 只返回已关联请求 ID 的记录，旧记录仍由保守恢复处理。
+        """
+        channel, account_id = _scope(channel, account_id)
+        return [
+            self._stored(row)
+            for row in self.connection.execute(
+                """SELECT i.* FROM channel_inbox i JOIN channel_request_links r ON r.inbox_id = i.id
+                   WHERE i.channel = ? AND i.account_id = ? AND i.status = 'processing' ORDER BY i.id""",
+                (channel, account_id),
+            )
+        ]
 
     def prepare_reply(
         self,
@@ -505,6 +543,7 @@ class ChannelStore:
         kind: str = "model",
         turn_id: str | None = None,
         error_code: str | None = None,
+        binding_session_id: str | None = None,
     ) -> None:
         """在发送前保存完整回答及一次生成的分段标识。
 
@@ -517,6 +556,7 @@ class ChannelStore:
             kind: 回答来源，默认 model；命令或错误使用独立类型。
             turn_id: 可选 Runtime 回合 ID。
             error_code: 可选受控错误码，不应包含原始异常或凭据。
+            binding_session_id: /new 成功后的新绑定，与命令回复一起原子保存。
         返回:
             None。
         异常:
@@ -530,14 +570,24 @@ class ChannelStore:
             _nonempty(turn_id, "turn_id")
         if error_code is not None:
             _nonempty(error_code, "error_code")
+        if binding_session_id is not None:
+            _nonempty(binding_session_id, "binding_session_id")
         payload = _json(_parts(parts))
         with self._transaction():
-            if self.get(record_id).status != "processing":
+            record = self.get(record_id)
+            if record.status != "processing":
                 raise RuntimeError("只有 processing 消息可以准备回复")
+            if binding_session_id is not None:
+                self.connection.execute(
+                    """INSERT INTO channel_bindings VALUES (?, ?, ?, ?)
+                       ON CONFLICT(channel, account_id, conversation_id)
+                       DO UPDATE SET session_id = excluded.session_id""",
+                    (*_identity(record.message), binding_session_id),
+                )
             self.connection.execute(
                 """UPDATE channel_inbox SET status = 'ready', response = ?, parts = ?, kind = ?,
-                   turn_id = ?, error_code = ? WHERE id = ?""",
-                (text, payload, kind, turn_id, error_code, record_id),
+                   turn_id = ?, error_code = ?, session_id = COALESCE(?, session_id) WHERE id = ?""",
+                (text, payload, kind, turn_id, error_code, binding_session_id, record_id),
             )
 
     def _part(self, record_id: int, part_index: int, status: str, part_status: str) -> StoredMessage:
@@ -648,7 +698,7 @@ class ChannelStore:
         返回:
             本次修补的记录数量 (int)。
         行为说明:
-            1. processing 转为固定错误通知 ready，保留会话、输入及 interrupted 错误码。
+            1. 无后台请求关联的 processing 转为固定中断通知；有关联的记录留待查询原请求。
             2. 遗留 sending 分段或记录转 delivery_uncertain；原 client_id 和回答保留。
             3. 已保存的 ready 回答继续可发；queued 输入仍可首次处理。
             4. 指定范围时，其他账号的处理和发送状态保持原样。
@@ -672,7 +722,7 @@ class ChannelStore:
                            error_code = 'delivery_interrupted' WHERE id = ?""",
                         (_json(record.parts), record.id),
                     )
-                elif record.status == "processing":
+                elif record.status == "processing" and record.backend_request_id is None:
                     self.connection.execute(
                         """UPDATE channel_inbox SET status = 'ready', response = ?, kind = 'error',
                            error_code = 'interrupted', parts = ? WHERE id = ?""",

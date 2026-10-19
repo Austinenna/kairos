@@ -2,6 +2,7 @@
 
 import copy
 import json
+import queue
 import re
 from collections import deque
 from contextlib import closing
@@ -11,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from kairos import weixin
+from kairos import program, weixin
 from kairos.channel_app import ChannelApp, ReplyDeliveryError, split_reply
 from kairos.channels.base import InboundMessage, ReceiveBatch, SendReceipt, TransportError
 from kairos.channels.store import INTERRUPTED_REPLY, ChannelStore
@@ -177,22 +178,40 @@ class RuntimeFactory:
             auto_memory=self.extraction_factory is not None,
             extraction_model_factory=self.extraction_factory,
         )
-        original_respond, original_close = runtime.respond, runtime.close
+        original_respond, original_close, original_new_session = runtime.respond, runtime.close, runtime.new_session
 
-        def respond(text):
+        def respond(text, *, request_id=None, **kwargs):
             """在同一线程记录并执行真实回合。
 
             作用:
                 核对协调器没有把已有 SQLite 连接交给其他线程。
             参数:
                 text: 用户输入。
+                request_id: 通道生成的稳定 ID；这个离线 Runtime 注入测试只验证原执行流程。
+                kwargs: 应用服务传入的图像、事件、取消与回合关联参数。
             返回:
                 原 Runtime 的回合结果。
             行为说明:
                 1. 记录线程，原样调用真实 respond。
             """
             self.events.append(("respond", get_ident()))
-            return original_respond(text)
+            return original_respond(text, **kwargs)
+
+        def new_session(*, title=None, system_prompt=None, request_id=None):
+            """用客户端兼容签名委托真实离线会话创建。
+
+            作用:
+                让既有业务回归继续覆盖真实 Session 行为，应用幂等另由集成测试检查。
+            参数:
+                title: 可选新会话标题。
+                system_prompt: 可选会话提示词。
+                request_id: 通道稳定请求 ID，本离线包装不承担后台请求账本。
+            返回:
+                原 Runtime 创建的 SessionInfo。
+            行为说明:
+                1. 不替换实际会话存储。
+            """
+            return original_new_session(title=title, system_prompt=system_prompt)
 
         def close():
             """记录关闭线程并完成真实后台收尾。
@@ -208,6 +227,7 @@ class RuntimeFactory:
             original_close()
 
         runtime.respond = respond
+        runtime.new_session = new_session
         runtime.close = close
         self.runtimes.append(runtime)
         return runtime
@@ -542,8 +562,8 @@ def test_partial_send_unknown_stops_remaining_parts_and_never_repeats(build_app)
     assert recovered.get(record_id).parts == record.parts
 
 
-def test_weixin_main_owns_runtime_on_one_thread_and_finishes_memory(tmp_path, monkeypatch):
-    """验证真实微信入口同线程运行，并在退出前完成后台记忆写入。
+def test_weixin_entry_uses_application_worker_and_finishes_memory(tmp_path, monkeypatch):
+    """验证真实微信入口经统一应用线程执行，并在退出前完成后台记忆写入。
 
     作用:
         覆盖 main 的依赖组装、运行锁以及 Runtime 资源生命周期。
@@ -553,33 +573,74 @@ def test_weixin_main_owns_runtime_on_one_thread_and_finishes_memory(tmp_path, mo
     返回:
         None。
     行为说明:
-        1. main 处理一条消息后退出；前台创建、执行、关闭均在调用线程。
+        1. main 处理一条消息后退出；Runtime 创建、执行、关闭均在专用应用线程。
         2. 真后台提取通过 write_core 写入临时记忆，退出时线程已结束。
     """
     fact = "以后交流默认用中文。"
     foreground = FakeModel([{"content": "好的"}])
     extraction = FakeModel([tool("write_core", content=fact), {"content": '{"status":"completed"}'}])
     factory = RuntimeFactory(tmp_path, foreground, extraction_factory=lambda: extraction)
-    adapter = FakeAdapter([(message("memory", fact),)])
+    batches = queue.Queue()
+    batches.put((message("memory", fact),))
+    delivered = []
+
+    class ThreadAdapter(FakeAdapter):
+        """为接收和发送线程各自创建平台替身。"""
+
+        def __init__(self):
+            """准备独立实例与共享的合成发送结果。
+
+            作用:
+                不共享真实 HTTP 客户端，同时允许测试检查最终手机输出。
+            参数:
+                无。
+            返回:
+                无返回值。
+            行为说明:
+                1. 只共享测试列表和消息队列。
+            """
+            super().__init__()
+            self.sent = delivered
+
+        def poll(self, checkpoint):
+            """等待一条合成消息，队列耗尽后返回空批次。
+
+            作用:
+                模拟可以安全停止的持续长轮询。
+            参数:
+                checkpoint: 已持久化游标。
+            返回:
+                ReceiveBatch。
+            行为说明:
+                1. 不连接微信，不在模型执行期间抛出脚本耗尽错误。
+            """
+            try:
+                items = batches.get(timeout=0.05)
+            except queue.Empty:
+                return ReceiveBatch((), checkpoint)
+            return ReceiveBatch(items, {"cursor": "saved"})
+
     account = tmp_path / "channels" / "weixin" / "account.json"
     account.parent.mkdir(parents=True)
     account.write_text("{}")
-    monkeypatch.setattr(weixin.config, "get_app_dir", lambda: tmp_path)
-    monkeypatch.setattr(weixin, "Settings", lambda: SimpleNamespace(kairos_api_key="synthetic-key"))
-    monkeypatch.setattr(weixin, "read_credentials", lambda _: {})
-    monkeypatch.setattr(weixin, "WeixinAdapter", lambda _: adapter)
-    monkeypatch.setattr(weixin, "create_runtime", factory)
+    monkeypatch.setattr(program.config, "get_app_dir", lambda: tmp_path)
+    monkeypatch.setattr(program, "Settings", lambda: SimpleNamespace(kairos_api_key="synthetic-key"))
+    monkeypatch.setattr(program, "read_credentials", lambda _: {})
+    monkeypatch.setattr(program, "WeixinAdapter", lambda _: ThreadAdapter())
+    monkeypatch.setattr(program, "create_runtime", factory)
 
     assert weixin.main(["run", "--max-messages", "1"]) == 0
-    assert factory.events == [(name, get_ident()) for name in ("create", "respond", "close")]
-    assert foreground.threads == [get_ident()]
-    assert extraction.threads and all(thread != get_ident() for thread in extraction.threads)
+    worker_thread = factory.events[0][1]
+    assert worker_thread != get_ident()
+    assert factory.events == [(name, worker_thread) for name in ("create", "respond", "close")]
+    assert foreground.threads == [worker_thread]
+    assert extraction.threads and all(thread not in (get_ident(), worker_thread) for thread in extraction.threads)
     assert factory.options[0]["db_path"] == tmp_path / "kairos.sqlite3"
     assert factory.options[0]["memory_dir"] == tmp_path / "memory"
     runtime = factory.runtimes[0]
     assert runtime._closed and not runtime.memory_extractor._worker.is_alive()
     assert fact in MemoryStore(tmp_path / "memory").snapshot()[0]
-    assert len(adapter.sent) == 1
+    assert len(delivered) == 1
 
 
 def test_only_owner_current_account_messages_enter_runtime(build_app):

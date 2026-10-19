@@ -1,8 +1,36 @@
 """供应商适配器共享的响应字段读取和工具调用归一化逻辑。"""
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from typing import Any
+
+from ..cancellation import raise_if_cancelled
+
+
+def cancellable_stream[T](stream: Iterable[T]) -> Iterator[T]:
+    """在每次读取 SDK 流之前和之后检查合作取消。
+
+    作用:
+        让正文、thinking、工具参数和空帧共享取消边界，不依赖正文回调触发。
+    参数:
+        stream: SDK 返回的同步流；其关闭仍由 provider 的 finally 负责。
+    返回:
+        原样产生每个 SDK 分片的迭代器。
+    行为说明:
+        1. 读取前检查，避免上一帧处理时已取消却再次进入阻塞读取。
+        2. 读取后检查，保证无正文分片也能观察取消；流结束前再次确认。
+        3. 正在阻塞的 next() 仍需等待数据或网络超时，不强制打断其他线程。
+    """
+    iterator = iter(stream)
+    while True:
+        raise_if_cancelled()
+        try:
+            item = next(iterator)
+        except StopIteration:
+            raise_if_cancelled()
+            return
+        raise_if_cancelled()
+        yield item
 
 
 def field(value: object, name: str, default: Any = None) -> Any:

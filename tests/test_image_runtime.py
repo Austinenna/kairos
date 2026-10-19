@@ -147,12 +147,9 @@ def test_error_and_observation_callbacks_cannot_expose_or_mutate_image_payload(t
     def observe(event):
         events.append(copy.deepcopy(event))
         if event["event"] == "model_request":
-            user = next(
-                message
-                for message in event["messages"]
-                if message["role"] == "user" and isinstance(message["content"], list)
-            )
-            user["content"].clear()
+            # 展示入口不再收到请求正文；修改展示副本也不能改变真正模型输入。
+            assert "messages" not in event and "tools" not in event
+            event["messages"] = []
 
     with create_runtime(model=model, db_path=tmp_path / "test.sqlite3", log_path=log_path) as runtime:
         with pytest.raises(RuntimeError) as raised:

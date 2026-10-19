@@ -17,6 +17,7 @@ from typing import Any
 
 from . import config
 from .agent_loop import AgentLoopLimitError, EventLogger, Model, run_agent_turn, sanitize_error
+from .cancellation import CancellationToken, cancellation_scope, raise_if_cancelled
 from .config import Settings, ToolSettings
 from .context import ContextBuilder
 from .database import open_database
@@ -890,6 +891,8 @@ class AgentRuntime:
         images: Sequence[ImageInput] = (),
         image_labels: Sequence[str] = (),
         on_event: EventLogger | None = None,
+        cancel_token: CancellationToken | None = None,
+        on_turn_start: Callable[[dict[str, str]], None] | None = None,
     ) -> AgentTurnResult:
         """处理一次用户输入并保存完整回合的执行记录。
 
@@ -903,7 +906,11 @@ class AgentRuntime:
             image_labels: 图片标签；省略时生成“图片 1”等标签。给出时必须与图片
                 数量相同，每个标签均为非空白字符串且互不重复。
             on_event: 可选的实时事件回调，接收循环输出的正文增量和执行关联 ID。
-                实例 logger 另行接收用于记录和汇总的观察事件。
+                不接收原始请求、完整响应或工具载荷；实例 logger 另行接收完整观察事件。
+            cancel_token: 可选的线程安全合作取消标记；启用时优先使用模型的流式接口，
+                在模型与工具边界停止，不强制打断正在等待的网络或同步工具。
+            on_turn_start: 可选同步关联回调，接收 session_id、turn_id、user_message_id 字典。
+                Turn 已保存且模型、工具尚未执行时调用；必须确认关联持久化后返回。
 
         返回:
             完成回合的 AgentTurnResult，包含最终正文、消息副本、本轮用量、会话累计、
@@ -928,6 +935,7 @@ class AgentRuntime:
             1. 拒绝重复执行，清空上次结果并检查运行状态、输入、标签及图片预算。
                这些准入检查发生在写入 Turn 之前；图片随后组装为完整用户消息。
             2. 在存储中创建 Turn 和输入消息，再加入内存上下文并启动记录器。
+               关联回调成功返回后才允许模型和工具执行；回调失败沿用回合失败收尾。
                循环负责在实际边界保存步骤、助手消息及工具调用和结果。
             3. 成功时保存回合完成状态，并汇总事件生成返回值。执行失败时，若
                本轮尚无完整助手消息，则撤出上下文中的输入，数据库审计记录保留；
@@ -935,6 +943,8 @@ class AgentRuntime:
             4. 循环或回合收尾阶段发现 SQLite 保存故障后标记 _storage_failed，
                当前会话需显式恢复后才能继续提交；begin_turn 失败则直接向外传播。
                无论循环如何退出，finally 都会清除正在执行标记。
+            5. 已取消的请求在创建 Turn 前停止；执行中取消使用 KeyboardInterrupt 子类，
+               沿用 cancelled 状态及工具记录保留规则。作用域退出后不影响后续请求和后台记忆。
         """
 
         if self._responding:
@@ -944,6 +954,8 @@ class AgentRuntime:
         self._ensure_idle()
         if self._storage_failed:
             raise RuntimeError("会话保存曾失败，请处理存储问题并 /resume 当前会话后继续")
+        if cancel_token is not None:
+            cancel_token.raise_if_cancelled()
         if not isinstance(prompt, str) or (not prompt.strip() and not images):
             raise ValueError("用户消息不能为空")
         images = tuple(images)
@@ -977,17 +989,27 @@ class AgentRuntime:
                 self.logger(event)
 
         try:
-            content, messages = run_agent_turn(
-                self.messages,
-                self.model,
-                self.tool_registry.handlers,
-                self.tool_registry.schemas,
-                max_tool_rounds=self.max_tool_rounds,
-                logger=record,
-                on_event=on_event,
-                recorder=recorder,
-                prepare_messages=self._prepare_messages,
-            )
+            with cancellation_scope(cancel_token):
+                if on_turn_start is not None:
+                    on_turn_start(
+                        {
+                            "session_id": self.session_id,
+                            "turn_id": turn.turn_id,
+                            "user_message_id": turn.user_message_id,
+                        }
+                    )
+                raise_if_cancelled()
+                content, messages = run_agent_turn(
+                    self.messages,
+                    self.model,
+                    self.tool_registry.handlers,
+                    self.tool_registry.schemas,
+                    max_tool_rounds=self.max_tool_rounds,
+                    logger=record,
+                    on_event=on_event,
+                    recorder=recorder,
+                    prepare_messages=self._prepare_messages,
+                )
             self.session_store.finish_turn(turn.turn_id, "completed", "final_answer")
         except (Exception, KeyboardInterrupt) as error:
             safe_error = sanitize_error(error, self.messages)
