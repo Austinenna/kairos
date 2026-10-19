@@ -310,6 +310,7 @@ def test_matched_message_persists_before_send_and_survives_restart(probe, state,
     key, record = next(iter(restored["replies"].items()))
     assert str(2**63 - 1) not in key
     assert record["status"] == "sent"
+    assert record["acknowledgement"] == "business"
     assert expected not in path.read_text()
     assert "synthetic-context-token" not in path.read_text()
     duplicate_client = FakeClient()
@@ -440,55 +441,116 @@ def test_single_batch_only_replies_once(probe, state, tmp_path):
     assert len(client.calls) == 1
 
 
-def test_persisted_sending_is_not_replayed(probe, state, tmp_path):
-    """验证进程中断留下的 sending 状态不会触发重发。
+@pytest.mark.parametrize("status", ["sending", "uncertain", "submitted", "sent"])
+def test_persisted_delivery_state_is_not_replayed(probe, state, tmp_path, status):
+    """验证已有发送状态跨重启后不会触发重发。
 
     作用:
-        覆盖发送已开始、结果尚未记录时的重启边界。
+        覆盖发送开始、结果未知、HTTP 接受和业务确认后的重启边界。
 
     参数:
         probe: 探针模块。
         state: 合成状态。
         tmp_path: 隔离目录。
+        status: 需要恢复的发送状态。
 
     返回:
         None。
 
     行为说明:
-        1. 将已知消息的持久记录设为 sending，再模拟重启后重复投递。
+        1. 将已知消息的持久记录设为指定状态，再模拟重启后重复投递。
     """
     path = tmp_path / "state.json"
     batch = {"msgs": [incoming()]}
     probe.process_batch(FakeClient(), state, path, batch, "Kairos 探针 TEST-123")
-    next(iter(state["replies"].values()))["status"] = "sending"
+    next(iter(state["replies"].values()))["status"] = status
     probe.save_state(path, state)
     client = FakeClient()
     probe.process_batch(client, probe.load_state(path), path, batch, "Kairos 探针 TEST-123")
     assert client.calls == []
 
 
-def test_ambiguous_success_response_is_uncertain(probe, state, tmp_path):
-    """验证发送响应缺少明确成功码时不标记成功。
+@pytest.mark.parametrize(
+    ("response", "status", "acknowledgement"),
+    [
+        ({}, "submitted", "http_only"),
+        ({"ret": None}, "submitted", "http_only"),
+        ({"errcode": None}, "submitted", "http_only"),
+        ({"ret": None, "errcode": None}, "submitted", "http_only"),
+        ({"ret": 0}, "sent", "business"),
+        ({"errcode": 0}, "sent", "business"),
+        ({"ret": 0, "errcode": 0}, "sent", "business"),
+        ({"ret": None, "errcode": 0}, "sent", "business"),
+        ({"ret": 0, "errcode": None}, "sent", "business"),
+    ],
+)
+def test_optional_success_codes_record_acknowledgement(probe, state, tmp_path, response, status, acknowledgement):
+    """验证可选成功码缺失时完成提交，并保留确认依据。
 
     作用:
-        区分请求返回 JSON 和微信确认发送成功。
+        区分 HTTP 请求成功返回和微信显式业务成功码，不把缺失字段误判为失败。
 
     参数:
         probe: 探针模块。
         state: 合成状态。
         tmp_path: 隔离目录。
+        response: 缺少错误码、空错误码或含数值零的合成响应。
+        status: 应保存的发送状态。
+        acknowledgement: 应保存的确认依据。
 
     返回:
         None。
 
     行为说明:
-        1. 返回空对象，确认保留结果未知状态。
+        1. 各种成功返回均结束本次探针；缺少业务码时只记录 HTTP 接受。
+        2. 重启后重新处理原消息不重复发送。
     """
     path = tmp_path / "state.json"
-    client = FakeClient(response={})
+    client = FakeClient(response=response)
+    batch = {"msgs": [incoming()], "get_updates_buf": "cursor-after"}
+    assert probe.process_batch(client, state, path, batch, "Kairos 探针 TEST-123") is True
+    restored = probe.load_state(path)
+    record = next(iter(restored["replies"].values()))
+    assert record["status"] == status
+    assert record["acknowledgement"] == acknowledgement
+    assert restored["cursor"] == "cursor-after"
+    duplicate_client = FakeClient()
+    probe.process_batch(duplicate_client, restored, path, batch, "Kairos 探针 TEST-123")
+    assert duplicate_client.calls == []
+
+
+@pytest.mark.parametrize(
+    "response", [{"ret": -1}, {"errcode": 401}, {"ret": 0, "errcode": 401}, {"ret": -1, "errcode": 0}]
+)
+def test_nonzero_business_codes_stop_without_replay(probe, state, tmp_path, response):
+    """验证任一非零业务码都停止并保留结果未知状态。
+
+    作用:
+        防止只检查一个成功字段而掩盖另一个字段报告的失败。
+
+    参数:
+        probe: 探针模块。
+        state: 合成状态。
+        tmp_path: 隔离目录。
+        response: 至少包含一个非零错误码的合成响应。
+
+    返回:
+        None。
+
+    行为说明:
+        1. 发送失败保留原游标；重启收到原消息时不自动重试。
+    """
+    path = tmp_path / "state.json"
+    client = FakeClient(response=response)
+    batch = {"msgs": [incoming()], "get_updates_buf": "cursor-after"}
     with pytest.raises(probe.ProbeError):
-        probe.process_batch(client, state, path, {"msgs": [incoming()]}, "Kairos 探针 TEST-123")
-    assert next(iter(probe.load_state(path)["replies"].values()))["status"] == "uncertain"
+        probe.process_batch(client, state, path, batch, "Kairos 探针 TEST-123")
+    restored = probe.load_state(path)
+    assert next(iter(restored["replies"].values()))["status"] == "uncertain"
+    assert restored["cursor"] == "cursor-before"
+    duplicate_client = FakeClient()
+    probe.process_batch(duplicate_client, restored, path, batch, "Kairos 探针 TEST-123")
+    assert duplicate_client.calls == []
 
 
 def test_atomic_write_failure_preserves_previous_state(probe, state, tmp_path, monkeypatch):

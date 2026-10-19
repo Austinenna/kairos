@@ -320,13 +320,14 @@ def process_batch(client: ProbeClient, state: dict, path: Path, batch: dict, exp
         batch: getupdates 返回的消息批次。
         expected: 本次必须精确匹配的测试口令。
     返回:
-        本批是否成功提交过一条测试回复 (bool)。
+        本批是否提交过一条未被接口明确拒绝的测试回复 (bool)。
     异常:
-        ProbeError: 批次格式无效、匹配消息缺少 ID/回复令牌，或发送响应未明确成功。
+        ProbeError: 批次格式无效、匹配消息缺少 ID/回复令牌，或发送响应明确失败。
     行为说明:
         1. 只接受扫码用户、非群聊、非 Bot 的纯文字；其他消息直接忽略。
         2. 发送前保存 sending；失败保存 uncertain，不自动重发结果未知的消息。
-        3. 已见消息跨重启去重；本批处理完成后才保存新游标。
+        3. 数值零业务码保存 sent；未提供业务码保存 submitted，仍须手机确认。
+        4. 已见消息跨重启去重；本批处理完成后才保存新游标。
     """
     owner = state["credentials"]["owner_id"]
     messages = batch.get("msgs", [])
@@ -382,14 +383,20 @@ def process_batch(client: ProbeClient, state: dict, path: Path, batch: dict, exp
                 },
                 timeout=15.0,
             )
-            if result.get("ret") != 0 or result.get("errcode") not in (None, 0):
-                raise ProbeError("发送接口未明确确认成功，请先检查手机；不会自动重发")
+            if result.get("ret") not in (None, 0) or result.get("errcode") not in (None, 0):
+                raise ProbeError("发送接口返回业务错误，请先检查手机；不会自动重发")
         except BaseException:
             records[key]["status"] = "uncertain"
             save_state(path, state)
             raise
-        records[key]["status"] = "sent"
+        business_ack = any(type(result.get(field)) is int and result[field] == 0 for field in ("ret", "errcode"))
+        records[key]["status"] = "sent" if business_ack else "submitted"
+        records[key]["acknowledgement"] = "business" if business_ack else "http_only"
         save_state(path, state)
+        if business_ack:
+            print("发送接口返回了业务成功码。", flush=True)
+        else:
+            print("发送接口已返回 HTTP 成功，但未提供业务状态码；投递结果以手机确认为准。", flush=True)
         replied = True
     cursor = batch.get("get_updates_buf")
     if isinstance(cursor, str) and cursor:
@@ -407,7 +414,7 @@ def run_probe(path: Path, timeout: float) -> None:
         path: 专用状态文件。
         timeout: 等待测试消息的最长秒数。
     返回:
-        None；收到服务端成功响应后仍需用户确认手机实际收到。
+        None；发送请求返回后仍需用户确认手机实际收到。
     异常:
         ProbeError: 没有登录、凭据结构无效，或等待测试消息超时。
     行为说明:
@@ -423,8 +430,8 @@ def run_probe(path: Path, timeout: float) -> None:
         raise ProbeError("缺少完整登录凭据，请先运行 login")
     client = ProbeClient(credentials["base_url"], credentials["bot_token"])
     expected = "Kairos测试-" + secrets.token_hex(3).upper()
-    count = sum(record.get("status") == "sent" for record in state.get("replies", {}).values())
-    print(f"已加载登录状态；此前成功回复 {count} 次。", flush=True)
+    count = len(state.get("replies", {}))
+    print(f"已加载登录状态；此前记录 {count} 次发送。", flush=True)
     print(f"请在手机微信的 Bot 私聊中发送：{expected}", flush=True)
     print("只回复本次口令，成功提交一条固定回复后自动停止。", flush=True)
     deadline = time.monotonic() + timeout
@@ -438,7 +445,7 @@ def run_probe(path: Path, timeout: float) -> None:
         except ProbeTimeout:
             continue
         if process_batch(client, state, path, batch, expected):
-            print("已收到本人测试口令，微信发送接口确认成功，状态已保存。请确认手机实际收到固定回复。", flush=True)
+            print("已收到本人测试口令，发送请求已提交，状态已保存。请确认手机实际收到固定回复。", flush=True)
             return
         time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
     raise ProbeError("等待测试口令超时；本次没有发送回复")
@@ -504,7 +511,8 @@ def main() -> int:
                             "logged_in": bool(state.get("credentials")),
                             "cursor_saved": bool(state.get("cursor")),
                             "sent": sum(record.get("status") == "sent" for record in records),
-                            "uncertain": sum(record.get("status") != "sent" for record in records),
+                            "submitted": sum(record.get("status") == "submitted" for record in records),
+                            "uncertain": sum(record.get("status") in ("sending", "uncertain") for record in records),
                         },
                         ensure_ascii=False,
                     )
