@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from .pricing import estimate_cost_snapshot
+
 SESSION_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -44,6 +46,7 @@ CREATE TABLE IF NOT EXISTS session_steps (
     model TEXT NOT NULL,
     status TEXT NOT NULL,
     usage TEXT,
+    cost_snapshot TEXT,
     finish_reason TEXT,
     duration_ms REAL,
     error TEXT,
@@ -275,7 +278,7 @@ class SessionStore:
         行为说明:
             1. 保存连接引用并拒绝已有事务，避免影响调用方未完成的写入。
             2. 启用外键，在显式事务中创建缺失的表和索引，建表阶段失败时回滚。
-            3. 保留连接供后续使用，不改变其 row_factory，也不负责关闭连接。
+            3. 幂等补齐旧步骤费用快照；保留连接，不改变 row_factory 或关闭连接。
         """
         self.connection = connection
         if connection.in_transaction:
@@ -286,6 +289,52 @@ class SessionStore:
         except BaseException:
             connection.rollback()
             raise
+        self._migrate_cost_snapshots()
+
+    def _migrate_cost_snapshots(self) -> None:
+        """为旧步骤补齐费用快照列并保存一次历史估算。
+
+        作用:
+            在打开旧数据库时保留已有执行记录，用记录创建时间和当前价格表补估费用。
+
+        返回:
+            无返回值(None)；缺失列及可迁移的快照在同一事务内保存。
+
+        行为说明:
+            1. 检查表结构后按需加列，只处理有用量且没有快照的步骤。
+            2. 有效的带时区时间转为 UTC；非法时间、无时区时间保持未知，不改原值。
+            3. 已有快照即使费用未知也不重算，没有用量的步骤继续保留空快照。
+        """
+        with self._transaction():
+            columns = {row["name"] for row in self._rows("PRAGMA table_info(session_steps)")}
+            if "cost_snapshot" not in columns:
+                self.connection.execute("ALTER TABLE session_steps ADD COLUMN cost_snapshot TEXT")
+            rows = self._rows(
+                """SELECT step_id, model, usage, created_at FROM session_steps
+                    WHERE cost_snapshot IS NULL AND usage IS NOT NULL"""
+            )
+            for row in rows:
+                snapshot = {
+                    "cost_usd": None,
+                    "rates": None,
+                    "period": None,
+                    "priced_at": None,
+                    "source": "legacy_estimate",
+                }
+                try:
+                    priced_at = datetime.fromisoformat(row["created_at"])
+                except (TypeError, ValueError):
+                    priced_at = None
+                if priced_at is not None and priced_at.tzinfo is not None:
+                    try:
+                        usage = json.loads(row["usage"])
+                    except (TypeError, ValueError):
+                        usage = None
+                    snapshot = estimate_cost_snapshot(row["model"], usage, priced_at, source="legacy_estimate")
+                self.connection.execute(
+                    "UPDATE session_steps SET cost_snapshot = ? WHERE step_id = ? AND cost_snapshot IS NULL",
+                    (_json(snapshot), row["step_id"]),
+                )
 
     @contextmanager
     def _transaction(self) -> Iterator[None]:
@@ -1100,6 +1149,7 @@ class SessionStore:
         status: str,
         *,
         usage: Any = None,
+        cost_snapshot: dict | None = None,
         finish_reason: str | None = None,
         duration_ms: float | None = None,
         error: Any = None,
@@ -1114,6 +1164,7 @@ class SessionStore:
             step_id: 已存在的步骤 ID，不要求原状态为 running。
             status: 去除首尾空白后非空的状态字符串；不校验状态枚举或状态迁移。
             usage: 可选用量记录，须能被 _json 编码，允许数据类实例。
+            cost_snapshot: 可选费用快照，与用量同一事务保存；None 保留已有快照。
             finish_reason: 可选模型或执行结束原因，原样保存。
             duration_ms: 可选耗时，单位毫秒；本函数不校验非负性。
             error: 可选错误详情，须能被 _json 编码。
@@ -1130,11 +1181,13 @@ class SessionStore:
         with self._transaction():
             step = self._step(step_id)
             self.connection.execute(
-                """UPDATE session_steps SET status = ?, usage = ?, finish_reason = ?, duration_ms = ?,
+                """UPDATE session_steps SET status = ?, usage = ?,
+                    cost_snapshot = COALESCE(?, cost_snapshot), finish_reason = ?, duration_ms = ?,
                     error = ?, finished_at = ? WHERE step_id = ?""",
                 (
                     status,
                     _json(usage) if usage is not None else None,
+                    _json(cost_snapshot) if cost_snapshot is not None else None,
                     finish_reason,
                     duration_ms,
                     _json(error) if error is not None else None,
@@ -1195,6 +1248,37 @@ class SessionStore:
             )
             self._touch(turn["session_id"])
 
+    def usage_steps(self, session_id: str) -> list[dict]:
+        """读取当前会话用于统计的步骤明细。
+
+        作用:
+            为会话累计和按回合查询提供同一持久化来源，不加载任何消息正文。
+
+        参数:
+            session_id: 已存在会话的完整 ID 或唯一前缀，由 get_session 校验。
+
+        返回:
+            按回合创建顺序及步骤序号排列的记录列表(list[dict])；
+            usage 和 cost_snapshot 已解码，空会话返回空列表。
+
+        行为说明:
+            1. 验证会话归属，统计查询仅关联步骤和回合，不读取消息载荷。
+            2. 不按完成状态过滤，保留失败或中断请求中已经记录的消耗。
+        """
+        session_id = self.get_session(session_id).session_id
+        rows = self._rows(
+            """SELECT s.step_id, s.turn_id, s.step_index, s.model, s.status,
+                s.usage, s.cost_snapshot, s.created_at FROM session_steps s
+                JOIN session_turns t ON t.turn_id = s.turn_id
+                WHERE t.session_id = ? ORDER BY t.created_at, t.rowid, s.step_index""",
+            (session_id,),
+        )
+        for row in rows:
+            for field in ("usage", "cost_snapshot"):
+                if row[field] is not None:
+                    row[field] = json.loads(row[field])
+        return rows
+
     def inspect(self, session_id: str) -> dict:
         """返回完整关联记录；展示层负责图片等内容的脱敏。"""
         session = self.get_session(session_id)
@@ -1212,7 +1296,7 @@ class SessionStore:
             (session_id,),
         )
         for row in turns + steps:
-            for field in ("usage", "error"):
+            for field in ("usage", "cost_snapshot", "error"):
                 if field in row and row[field] is not None:
                     row[field] = json.loads(row[field])
         for row in messages:

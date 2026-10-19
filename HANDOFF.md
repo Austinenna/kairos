@@ -31,6 +31,7 @@ Kairos 是个人工作与生活助手，也是从零学习 agent 开发的实践
 
 - `SessionStore` 管理 `sessions`、`session_turns`、`session_steps`、`session_messages`、`session_tool_calls`；新增会话表复用原数据库，不改待办表。
 - Runtime 提供 `new_session()`、`list_sessions()`、`resume_session()`、`rename_session()`、`session_details()`。`session_id` 和 `session_info` 标识当前会话；`respond()` 的返回值增加 `session_id`、`turn_id`、`step_ids`，工具结果用 `(ToolResult.step_id, ToolResult.call_id)` 定位调用。
+- 默认用量改为当前 session 累计：`session_usage()` 从步骤明细汇总，`session_steps.cost_snapshot` 保存逐请求估算费用及费率；新建归零、恢复继续，旧库初始化时一次性补估历史费用。单轮用量已经随步骤保存，自然语言查询工具尚未实现；见[会话用量统计与查询方案](docs/会话用量统计.md)。
 - 四类内部 ID 使用 UUID，`tool_call_id` 沿用模型接口返回值，数据库使用 `(step_id, tool_call_id)` 配对。消息表完整保存 `payload`；传给 provider 的内存消息不混入这些内部 ID 和顺序字段。
 - 新空会话已经写入数据库，未命名且未发消息时不显示在列表。恢复沿用保存的 system、provider、model 和思考设置，当前配置提供认证与服务地址。
 - 尚无完整助手消息便失败的输入以 `in_context=false` 留作审计，不进入后续请求；已经保存的完整助手消息和工具结果继续进入上下文。`history()` 返回当前上下文的图片摘要副本，`session_details()` 额外包含全部对象、ID 和审计记录。

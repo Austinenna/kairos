@@ -121,6 +121,7 @@ def run(
 
         renderer.status(f"[bold]Kairos[/] · {_session_label(runtime)} · 输入 /help 查看命令")
         _show_recovery_notice(runtime, renderer)
+        _show_session_usage(runtime, renderer)
         if getattr(runtime, "memory_extractor", None) is not None:
             renderer.status("[dim]全局记忆已启用；每轮后台提取的用量单独记录，不计入前台费用统计。[/]")
 
@@ -171,6 +172,7 @@ def run(
                             input_editor.clear()
                         renderer.status(f"[dim]已切换 · {_session_label(runtime)}[/]")
                         _show_recovery_notice(runtime, renderer)
+                        _show_session_usage(runtime, renderer)
                     elif cmd == "/rename":
                         if not arg:
                             raise ValueError("用法：/rename 标题")
@@ -230,6 +232,7 @@ def run(
                 renderer.render_turn(result, model=runtime.model_name, content_streamed=True)
                 continue
 
+            _show_session_usage(runtime, renderer)
             if input_editor is not None:
                 if runtime.last_input_retained:
                     renderer.status("[dim]本轮历史已保留，请继续询问；不会重新提交同一条消息。[/]")
@@ -244,6 +247,32 @@ def run(
                 renderer.status("[dim]正在完成后台记忆提取，完成后退出。[/]")
             runtime.close()
             _show_memory_events(runtime, renderer)
+
+
+def _show_session_usage(runtime: AgentRuntime, renderer: TerminalRenderer) -> None:
+    """在启动、切换或失败收尾时显示当前会话的持久化统计。
+
+    作用:
+        让新会话显示零用量，恢复或请求失败后显示已保存的累计值。
+
+    参数:
+        runtime: 当前运行时；兼容没有统计接口的外部测试替身。
+        renderer: 当前终端输出器。
+
+    返回:
+        无返回值（None）。
+
+    行为说明:
+        1. 有统计接口时读取数据库汇总并展示，不将旧会话的数值带到新会话。
+        2. 统计读取发生数据库错误时显示未知，不覆盖此前报告的执行错误。
+    """
+    reader = getattr(runtime, "session_usage", None)
+    if reader is not None:
+        try:
+            summary = reader()
+        except sqlite3.Error:
+            summary = None
+        renderer.render_usage(runtime.model_name, summary)
 
 
 def _show_memory_events(runtime: AgentRuntime, renderer: TerminalRenderer) -> None:

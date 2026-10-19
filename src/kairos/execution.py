@@ -2,9 +2,11 @@
 
 import sqlite3
 from collections.abc import Callable
+from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
 
+from .pricing import estimate_cost_snapshot
 from .sessions import SessionStore
 
 
@@ -42,6 +44,8 @@ class TurnRecorder:
         self._started = 0.0
         self._finished = True
         self._usage: dict | None = None
+        self._cost_snapshot: dict | None = None
+        self._priced_at: datetime | None = None
         self._finish_reason: str | None = None
 
     @property
@@ -81,15 +85,17 @@ class TurnRecorder:
 
         行为说明:
             1. 由存储层生成步骤 ID 并提交 running 记录。
-            2. 保存成功后才切换当前步骤，重置用量、停止原因和计时起点。
+            2. 保存成功后才切换当前步骤，重置用量、费用、停止原因和 UTC 请求起点。
         """
 
         step = self._save(self.store.start_step, self.turn_id, index, self.model)
         self.step_id = step.step_id
         self.step_ids.append(step.step_id)
         self._started = perf_counter()
+        self._priced_at = datetime.now(UTC)
         self._finished = False
         self._usage = None
+        self._cost_snapshot = None
         self._finish_reason = None
 
     def record_response(self, response: dict, duration_ms: float) -> None:
@@ -108,16 +114,22 @@ class TurnRecorder:
 
         行为说明:
             1. 从响应中取得统计字段，缺少时使用 None。
-            2. 将步骤状态保持为 running 写入；后面可能还有工具执行，暂不记录结束时间。
+            2. 按步骤的 UTC 请求起点固定费用快照，与用量原子保存。
+            3. 将步骤状态保持为 running 写入；后面可能还有工具执行，暂不记录结束时间。
         """
 
+        step_id = self._current_step()
         self._usage = response.get("usage")
+        self._cost_snapshot = (
+            estimate_cost_snapshot(self.model, self._usage, self._priced_at) if self._priced_at is not None else None
+        )
         self._finish_reason = response.get("finish_reason")
         self._save(
             self.store.finish_step,
-            self._current_step(),
+            step_id,
             "running",
             usage=self._usage,
+            cost_snapshot=self._cost_snapshot,
             finish_reason=self._finish_reason,
             duration_ms=duration_ms,
         )
@@ -198,7 +210,7 @@ class TurnRecorder:
 
         行为说明:
             1. 先检查是否已经收尾或发生保存故障，避免重复写入或覆盖待恢复状态。
-            2. 计算从步骤开始到当前的总耗时，连同模型用量和结束状态提交。
+            2. 计算总耗时，连同模型用量、原费用快照和结束状态提交，不按收尾时间重算费用。
             3. 保存成功后标记本步骤已收尾。
         """
 
@@ -209,6 +221,7 @@ class TurnRecorder:
             self._current_step(),
             status,
             usage=self._usage,
+            cost_snapshot=self._cost_snapshot,
             finish_reason=self._finish_reason,
             duration_ms=round((perf_counter() - self._started) * 1000, 3),
             error=error,

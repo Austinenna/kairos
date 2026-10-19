@@ -6,6 +6,7 @@ from rich.console import Console
 from kairos.pricing import Usage
 from kairos.runtime import AgentTurnResult
 from kairos.terminal_renderer import TerminalRenderer
+from kairos.usage_stats import summarize_usage
 
 
 def make_renderer():
@@ -52,6 +53,18 @@ flowchart TD
 """,
         messages=[],
         usage=Usage(input_tokens=100, cached_input_tokens=10, output_tokens=20, reasoning_tokens=0),
+        session_usage=summarize_usage(
+            [
+                {
+                    "usage": {
+                        "prompt_tokens": 100,
+                        "cached_input_tokens": 10,
+                        "completion_tokens": 20,
+                        "reasoning_tokens": 0,
+                    }
+                }
+            ]
+        ),
         finish_reason=None,
         events=[],
         tool_results=[],

@@ -36,13 +36,31 @@ FIRST = {"prompt_tokens": 6000, "completion_tokens": 100, "cached_input_tokens":
 LAST = {"prompt_tokens": 7000, "completion_tokens": 300, "cached_input_tokens": 0, "reasoning_tokens": 20}
 
 
-def render(result, monkeypatch):
+@pytest.fixture(autouse=True)
+def usage_pricing(monkeypatch):
+    """在请求开始前设置固定测试费率和窗口。
+
+    作用:
+        让运行时保存确定的费用快照，避免测试依赖实际时间或供应商价格。
+
+    参数:
+        monkeypatch: pytest 的临时替换工具。
+
+    返回:
+        None。
+
+    行为说明:
+        1. 高峰与非高峰使用相同费率，测试结束自动还原。
+    """
     monkeypatch.setitem(pricing.CONTEXT_WINDOW, "usage-test", 10000)
     monkeypatch.setitem(pricing.PRICES, "usage-test", {"peak": (1, 2, 3), "off_peak": (1, 2, 3)})
+
+
+def render(result):
     output = StringIO()
     renderer = TerminalRenderer(Console(file=output, width=220, color_system=None))
-    cost = renderer.render_turn(result, model="usage-test")
-    return output.getvalue(), cost
+    renderer.render_turn(result, model="usage-test")
+    return output.getvalue(), result.session_usage.cost
 
 
 def test_tool_turn_counts_all_requests_but_context_uses_latest_full_input(tmp_path, monkeypatch):
@@ -58,12 +76,14 @@ def test_tool_turn_counts_all_requests_but_context_uses_latest_full_input(tmp_pa
     assert result.usage.output_tokens == 400
     assert result.last_request_usage.input_tokens == 7000
     assert result.last_request_usage.output_tokens == 300
-    text, cost = render(result, monkeypatch)
-    context_line, turn_line = text.splitlines()[-2:]
+    text, cost = render(result)
+    context_line, session_line = text.splitlines()[-2:]
     assert context_line == "上下文窗口 7,000 / 10,000（70.00%）"
-    assert turn_line.startswith("本轮输入 13,000")
-    assert "输出 400" in turn_line
-    assert "本轮费用 $0.02720" in turn_line
+    assert session_line.startswith("会话输入 13,000")
+    assert "输出 400" in session_line
+    assert "会话费用 $0.02720" in session_line
+    assert "本轮" not in text
+    assert "高峰价" not in text
     assert "累计" not in text
     assert "130.00%" not in text
     assert cost == pytest.approx((13000 * 2 + 400 * 3) / 1_000_000)
@@ -79,10 +99,10 @@ def test_missing_usage_does_not_become_zero_or_stale_context(tmp_path, monkeypat
         assert result.last_request_usage is None
     else:
         assert result.last_request_usage.input_tokens == 7000
-    text, _ = render(result, monkeypatch)
-    assert "本轮费用未估算" in text
+    text, _ = render(result)
+    assert ("会话费用未估算" if missing == "both" else "部分未估算") in text
     assert "累计" not in text
-    assert "本轮输入 0" not in text
+    assert "会话输入 0" not in text
     if missing != "first":
         assert "上下文窗口 未知" in text
         assert "%" not in text
@@ -97,10 +117,10 @@ def test_invalid_or_missing_input_count_is_unknown_without_breaking_completed_tu
     assert result.usage.input_tokens is None
     assert result.usage.output_tokens == 400
     assert result.last_request_usage.input_tokens is None
-    text, _ = render(result, monkeypatch)
-    assert "本轮输入 未知" in text
+    text, _ = render(result)
+    assert "会话输入 未知" in text
     assert "上下文窗口 未知" in text
-    assert "本轮费用未估算" in text
+    assert "部分未估算" in text
 
 
 def test_unknown_cache_keeps_known_input_but_does_not_estimate_cost(tmp_path, monkeypatch):
@@ -109,7 +129,7 @@ def test_unknown_cache_keeps_known_input_but_does_not_estimate_cost(tmp_path, mo
         result = runtime.respond("查询待办")
     assert result.usage.cached_input_tokens is None
     assert result.usage.reasoning_tokens is None
-    text, _ = render(result, monkeypatch)
+    text, _ = render(result)
     assert "缓存命中 未知" in text
     assert "70.00%" in text
-    assert "本轮费用未估算" in text
+    assert "部分未估算" in text

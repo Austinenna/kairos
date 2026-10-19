@@ -25,8 +25,9 @@ from rich.text import Text
 from rich.theme import Theme
 
 from .images import redact_images
-from .pricing import CONTEXT_WINDOW, Usage, estimate_cost, is_peak
+from .pricing import CONTEXT_WINDOW
 from .runtime import AgentTurnResult
+from .usage_stats import SessionUsage
 
 _MERMAID_BLOCK = re.compile(r"```mermaid\s*\n(.*?)```", re.IGNORECASE | re.DOTALL)
 
@@ -200,23 +201,23 @@ class TerminalRenderer:
     def history(self, messages: list[dict]) -> None:
         self.console.print_json(data=redact_images(messages))
 
-    def render_turn(self, result: AgentTurnResult, *, model: str, content_streamed: bool = False) -> float:
-        """渲染一次 Agent 回合并返回本轮费用。
+    def render_turn(self, result: AgentTurnResult, *, model: str, content_streamed: bool = False) -> None:
+        """渲染一次 Agent 回合及当前会话的累计用量。
 
         作用:
-            展示回答、截断提示和用量统计，不维护跨回合累计费用。
+            展示回答、截断提示和持久化的会话统计，不在界面中累加或重算费用。
 
         参数:
             result: 运行时返回的完整回合结果。
-            model: 用于查询价格和上下文窗口的模型名称。
+            model: 用于查询上下文窗口的模型名称。
             content_streamed: 正文是否已经流式显示，为真时不重复打印。
 
         返回:
-            本轮估算费用（float，美元）；无法估算时返回 0.0，界面仍显示未知。
+            无返回值（None）；向终端打印回答和统计信息。
 
         行为说明:
             1. 按需展示正文和输出截断提示。
-            2. 根据本轮用量估算费用，分别展示上下文窗口和本轮消耗。
+            2. 使用运行时提供的会话统计，分别展示上下文窗口和会话消耗。
         """
 
         if not content_streamed:
@@ -224,14 +225,7 @@ class TerminalRenderer:
         if result.finish_reason in {"length", "max_tokens"}:
             self.status("[yellow]回复被截断了：输出达到了长度上限。[/]")
 
-        cost = estimate_cost(model, result.usage) if result.usage else None
-        self.render_usage(
-            model,
-            result.usage,
-            cost,
-            last_request_usage=result.last_request_usage,
-        )
-        return cost or 0.0
+        self.render_usage(model, result.session_usage)
 
     def render_content(self, content: str) -> None:
         """渲染普通文本、Markdown 和 Mermaid 代码块。"""
@@ -265,30 +259,26 @@ class TerminalRenderer:
     def render_usage(
         self,
         model: str,
-        usage: Usage | None,
-        cost: float | None,
-        *,
-        last_request_usage: Usage | None = None,
+        summary: SessionUsage | None,
     ) -> None:
-        """分行展示上下文窗口和本轮用量、费用。
+        """分行展示上下文窗口和当前会话的用量、费用。
 
         作用:
             将运行时用量投影为终端文字，避免累计输入被误认为单次上下文长度。
 
         参数:
             model: 用于查询上下文窗口的模型名称。
-            usage: 本轮累计用量，缺失字段为 None。
-            cost: 本轮估算费用，未知时为 None。
-            last_request_usage: 最后一次请求的用量，其输入已包含那次发送的全部历史。
+            summary: 数据库步骤汇总；None 表示调用方没有提供会话统计。
 
         返回:
             无返回值（None）；向终端打印统计文字。
 
         行为说明:
             1. 上下文窗口单独一行，按最后一次请求的完整输入计算占比，不含新输出。
-            2. 本轮输入、输出与费用放在同一行；未知值不按零计费，不展示累计费用。
+            2. 会话输入、输出与费用放在同一行；缺失用量显示未知，部分费用注明未全部估算。
         """
         window = CONTEXT_WINDOW.get(model)
+        last_request_usage = summary.last_request_usage if summary else None
         latest_input = last_request_usage.input_tokens if last_request_usage is not None else None
         if latest_input is None:
             context = "上下文窗口 未知"
@@ -299,9 +289,10 @@ class TerminalRenderer:
         self.status(f"[dim]{context}[/]")
 
         parts = []
-        if usage is None:
-            parts.append("本轮用量未知")
+        if summary is None:
+            parts.append("会话用量未知")
         else:
+            usage = summary.usage
             counts = {
                 name: f"{value:,}" if value is not None else "未知"
                 for name, value in (
@@ -312,11 +303,14 @@ class TerminalRenderer:
                 )
             }
             parts.append(
-                f"本轮输入 {counts['input']}（缓存命中 {counts['cached']}）"
+                f"会话输入 {counts['input']}（缓存命中 {counts['cached']}）"
                 f" · 输出 {counts['output']}（思考 {counts['reasoning']}）"
             )
-        if cost is not None:
-            parts.append(f"本轮费用 ${cost:.5f}" + (" · 高峰价" if is_peak() else ""))
+        if summary is None or (summary.step_count and summary.unpriced_steps == summary.step_count):
+            parts.append("会话费用未估算")
         else:
-            parts.append("本轮费用未估算")
+            cost = f"会话费用 ${summary.cost:.5f}"
+            if summary.unpriced_steps:
+                cost += "（部分未估算）"
+            parts.append(cost)
         self.status("[dim]" + " · ".join(parts) + "[/]")

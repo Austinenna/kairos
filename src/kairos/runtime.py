@@ -27,11 +27,12 @@ from .memory import MemoryStore
 from .memory_extraction import ExtractionJob, MemoryExtractor
 from .memory_tools import PRIMARY_MEMORY_TOOL_SCHEMAS
 from .observability import JsonlLogger
-from .pricing import Usage
+from .pricing import Usage, usage_from_normalized
 from .providers import AnthropicMessagesModel, OpenAICompatibleModel
 from .sessions import SessionInfo, SessionStore
 from .todos import add_todo, complete_todo, delete_todo, initialize_database, list_todos, update_todo
 from .tool_schemas import TODO_TOOL_SCHEMAS
+from .usage_stats import SessionUsage, summarize_usage
 
 DEFAULT_SYSTEM_PROMPT = """你是 Kairos，用户的个人助手。回答简洁直接，使用中文。
 当用户要求新增、查询、修改、完成或删除待办时，调用对应工具；工具返回结果后再用中文说明结果。
@@ -72,6 +73,7 @@ class AgentTurnResult:
     turn_id: str | None = None
     step_ids: tuple[str, ...] = ()
     last_request_usage: Usage | None = None
+    session_usage: SessionUsage | None = None
 
 
 def build_tool_handlers(connection: Any) -> dict[str, ToolHandler]:
@@ -182,12 +184,7 @@ def _usage_from_event(event: dict[str, Any]) -> Usage | None:
         1. 没有用量对象时返回 None；否则独立读取四个字段。
         2. 不推算缓存或思考量，不修改事件，不因统计失败打断已完成回合。
     """
-    raw = event.get("usage")
-    if not isinstance(raw, dict) or not raw:
-        return None
-    fields = ("prompt_tokens", "cached_input_tokens", "completion_tokens", "reasoning_tokens")
-    values = [raw.get(name) for name in fields]
-    return Usage(*(value if type(value) is int and value >= 0 else None for value in values))
+    return usage_from_normalized(event.get("usage"))
 
 
 def _aggregate_usage(events: list[dict[str, Any]]) -> Usage | None:
@@ -856,6 +853,25 @@ class AgentRuntime:
             self._close_model_client(previous_model)
         return self.session_info
 
+    def session_usage(self) -> SessionUsage:
+        """从数据库读取当前会话的累计用量和已保存费用。
+
+        作用:
+            为回合结束、程序启动和会话切换提供相同统计来源，重启后不丢失累计值。
+
+        参数:
+            无显式参数；使用当前 session_id 读取步骤明细。
+
+        返回:
+            会话统计（SessionUsage）；新会话为零，缺失用量和费用保持未知标记。
+
+        行为说明:
+            1. 检查运行时尚未关闭，只读取当前会话的步骤，不加载消息正文或图片。
+            2. 包含失败或中断回合已保存的明细，不混入其他会话和后台记忆提取。
+        """
+        self._ensure_open()
+        return summarize_usage(self.session_store.usage_steps(self.session_id))
+
     def session_details(self) -> dict:
         """读取当前会话的完整关联记录并生成图片摘要。
 
@@ -900,7 +916,7 @@ class AgentRuntime:
                 实例 logger 另行接收用于记录和汇总的观察事件。
 
         返回:
-            完成回合的 AgentTurnResult，包含最终正文、消息副本、汇总用量、
+            完成回合的 AgentTurnResult，包含最终正文、消息副本、本轮用量、会话累计、
             工具结果及 session_id、turn_id、step_ids；同时保存到 last_result。
             回合失败或中断时不返回部分结果。
 
@@ -1024,6 +1040,7 @@ class AgentRuntime:
             turn_id=turn.turn_id,
             step_ids=tuple(recorder.step_ids),
             last_request_usage=_last_request_usage(events),
+            session_usage=self.session_usage(),
         )
         self.last_result = result
         self._schedule_memory(source, original_length)

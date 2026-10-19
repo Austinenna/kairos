@@ -35,6 +35,64 @@ class Usage:
     reasoning_tokens: int | None
 
 
+def usage_from_normalized(raw: object) -> Usage | None:
+    """把统一协议用量转换为保留未知字段的统计对象。
+
+    作用:
+        为持久化费用快照和会话统计共用同一解析口径，不修改供应商用量。
+
+    参数:
+        raw: 归一化用量字典，使用 prompt_tokens、cached_input_tokens、
+            completion_tokens 和 reasoning_tokens 字段；其他对象视为没有用量。
+
+    返回:
+        用量对象(Usage)；不是非空字典时返回 None，非法或缺失计数保留 None。
+
+    行为说明:
+        1. 仅接受非负整数，布尔值、负数和字符串均不当作有效计数。
+        2. 各字段独立校验，不把缺失值补为零，也不推算缓存或思考量。
+    """
+    if not isinstance(raw, dict) or not raw:
+        return None
+    fields = ("prompt_tokens", "cached_input_tokens", "completion_tokens", "reasoning_tokens")
+    values = [raw.get(name) for name in fields]
+    return Usage(*(value if type(value) is int and value >= 0 else None for value in values))
+
+
+def estimate_cost_snapshot(model: str, raw_usage: object, priced_at: datetime, *, source: str = "response") -> dict:
+    """按指定请求时间生成可持久化的费用估算快照。
+
+    作用:
+        在响应保存或旧记录迁移时固定费用、费率和时段，恢复会话时无需重新计价。
+
+    参数:
+        model: 用于查找现有价格表的模型名称。
+        raw_usage: 统一协议用量字典，由 usage_from_normalized 校验。
+        priced_at: 请求起点；带时区时转换为 UTC，无时区时按 UTC 解释。
+        source: 快照来源，正常响应使用 response，历史补估使用 legacy_estimate。
+
+    返回:
+        含 cost_usd、rates、period、priced_at、source 的字典(dict)；
+        未知价格或关键用量缺失时 cost_usd 为 None，未知价格的 rates 也为 None。
+
+    行为说明:
+        1. 固定 UTC 时间和高峰时段，复制当前每百万 token 费率。
+        2. 使用校验后的输入、缓存和输出估算费用；思考明细不单独计费。
+        3. 仅生成数据，不写库；调用方负责把快照与用量原子保存。
+    """
+    priced_at = priced_at.replace(tzinfo=UTC) if priced_at.tzinfo is None else priced_at.astimezone(UTC)
+    period = "peak" if is_peak(priced_at) else "off_peak"
+    table = PRICES.get(model)
+    usage = usage_from_normalized(raw_usage)
+    return {
+        "cost_usd": estimate_cost(model, usage, priced_at) if usage is not None else None,
+        "rates": list(table[period]) if table is not None else None,
+        "period": period,
+        "priced_at": priced_at.isoformat(),
+        "source": source,
+    }
+
+
 def usage_from_openai(u: object) -> Usage:
     """通过统一协议转换将 OpenAI 用量映射为 Usage。
 
