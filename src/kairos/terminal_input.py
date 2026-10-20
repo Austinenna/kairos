@@ -361,11 +361,6 @@ class TerminalInput:
         command = text.split(maxsplit=1)[0] if text.startswith("/") else ""
         if command and command != "/file":
             # 帮助/历史/思考等命令不消耗附件；加载中也可以退出或清空。
-            self._restoring = True
-            self._text = " ".join(item.marker for item in self._attachments)
-            self._cursor = len(self._text)
-            self._buffer.document = Document(self._text, self._cursor)
-            self._restoring = False
             event.app.exit(result=InputDraft(text))
             return
         if not text and not self._attachments:
@@ -385,7 +380,6 @@ class TerminalInput:
             return
         labels = tuple(item.label or f"图片 {item.number}" for item in self._attachments)
         result = InputDraft(text, images, labels)
-        self.clear()
         event.app.exit(result=result)
 
     def _toolbar(self):
@@ -411,6 +405,25 @@ class TerminalInput:
         return parts
 
     def read(self, draft: InputDraft | None = None) -> InputDraft:
+        """读取一次输入，在终端固定提交内容后准备下一份草稿。
+
+        作用:
+            衔接交互编辑和调用方处理，保留提交内容的终端显示。
+
+        参数:
+            draft: 可选的恢复草稿；省略时延续内部文字与附件。
+
+        返回:
+            已提交的文字及按命令规则消费的附件（InputDraft）。
+
+        异常:
+            RuntimeError: 输入区已经关闭。
+
+        行为说明:
+            1. 按需恢复草稿并运行 PromptSession，提交时保持缓冲区供最终绘制。
+            2. 最终绘制完成后，普通消息和 /file 清空草稿，其他命令只保留附件。
+            3. 输入中断或结束时释放事件循环引用，不执行成功提交的清理。
+        """
         if self._closed:
             raise RuntimeError("输入区已关闭。")
         if draft is not None:
@@ -436,7 +449,17 @@ class TerminalInput:
             self._drain_results()
 
         try:
-            return self._session.prompt(default=Document(self._text, self._cursor), pre_run=ready)
+            result = self._session.prompt(default=Document(self._text, self._cursor), pre_run=ready)
+            # prompt 返回前才将最终输入固定到终端历史，不能在 _submit 中提前改写缓冲区。
+            self._restoring = True
+            command = result.text.split(maxsplit=1)[0] if result.text.startswith("/") else ""
+            if command and command != "/file":
+                self._text = " ".join(item.marker for item in self._attachments)
+                self._cursor = len(self._text)
+                self._buffer.document = Document(self._text, self._cursor)
+            else:
+                self.clear()
+            return result
         finally:
             self._loop = None
             self._restoring = False

@@ -190,6 +190,7 @@ def test_footer_stays_at_bottom_updates_and_disappears_from_history(monkeypatch,
 
             assert _drive(pipe, editor, check_and_send) == InputDraft("测试发送")
             assert frames[-1].done
+            assert "你 › 测试发送" in frames[-1].text
             assert "上下文窗口" not in frames[-1].text
             assert "会话输入" not in frames[-1].text
             assert "Ctrl+V" not in frames[-1].text
@@ -239,7 +240,63 @@ def test_multiline_input_and_image_attachment_keep_footer_at_bottom(monkeypatch)
             result = _drive(pipe, editor, check_and_send, draft=InputDraft("第一行", (image,)))
             assert [line.rstrip() for line in result.text.splitlines()] == ["第一行", "第二行"]
             assert result.images == (image,)
+            assert frames[-1].done
+            assert "你 › 第一行 [图片 1]" in frames[-1].text
+            assert "第二行" in frames[-1].text
             assert "上下文窗口" not in frames[-1].text
+            assert "示例.png" not in frames[-1].text
+        finally:
+            editor.close()
+
+
+@pytest.mark.parametrize("text", ["/help", "/file notes.txt", ""])
+def test_submission_stays_visible_before_preparing_the_next_draft(monkeypatch, text):
+    """验证命令与纯图片提交留在历史中，下一次输入使用正确草稿。
+
+    作用:
+        防止提交前清理缓冲区抹掉历史，也防止延后清理导致旧输入重复发送。
+
+    参数:
+        monkeypatch: pytest 的临时替换工具。
+        text: 带附件的本地命令、文件命令或纯图片消息。
+
+    返回:
+        None；断言失败时由 pytest 报告差异。
+
+    行为说明:
+        1. 捕获最终帧，确认原始命令和图片标签仍然可见。
+        2. 再次输入时仅本地命令保留附件，已消费的文字和图片不再出现。
+    """
+    image_bytes = io.BytesIO()
+    Image.new("RGB", (12, 8), "red").save(image_bytes, format="PNG")
+    image = prepare_image(image_bytes.getvalue(), "示例.png")
+    with create_pipe_input() as pipe:
+        editor = TerminalInput(input=pipe, output=_SizedOutput(24, 120), budget_check=lambda _: None)
+        try:
+            frames = _capture_frames(monkeypatch, editor)
+            result = _drive(pipe, editor, lambda: pipe.send_text("\r"), draft=InputDraft(text, (image,)))
+            retained_images = (image,) if text == "/help" else ()
+            submitted_images = () if text == "/help" else (image,)
+            assert result.text == text
+            assert result.images == submitted_images
+            assert frames[-1].done
+            assert f"你 › {text + ' ' if text else ''}[图片 1]" in frames[-1].text
+            assert "Ctrl+V" not in frames[-1].text
+            previous_count = len(frames)
+
+            def send_next():
+                _until(lambda: len(frames) > previous_count and not frames[-1].done)
+                frame = frames[-1]
+                if text:
+                    assert text not in frame.text
+                assert ("[图片 1]" in frame.text) == bool(retained_images)
+                pipe.send_text("下一轮\r")
+
+            result = _drive(pipe, editor, send_next)
+            assert result.text == "下一轮"
+            assert result.images == retained_images
+            assert frames[-1].done
+            assert "下一轮" in frames[-1].text
         finally:
             editor.close()
 
