@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from kairos import program
 from kairos.app_lock import AppAlreadyRunning, application_lock
+from kairos.config import Settings
 
 
 @pytest.fixture
@@ -23,7 +24,7 @@ def harness(monkeypatch, isolated_app_dir):
         1. 不创建真实网络客户端；Runtime 本身另由应用层集成测试覆盖。
     """
     state = SimpleNamespace(events=[], failures={}, reason="exit", worker_error=None, clients=[], terminal_options=None)
-    state.settings = SimpleNamespace(kairos_api_key="synthetic-key", kairos_channels=["terminal", "weixin"])
+    state.settings = SimpleNamespace(kairos_api_key="synthetic-key")
 
     def record(stage):
         """记录阶段，并核对阶段执行时总锁仍然有效。
@@ -235,6 +236,40 @@ def test_enabled_entries_share_one_service_and_close_before_unlock(harness, chan
     assert harness.events.index("stop-accepting") < harness.events.index("cancel")
     with application_lock(isolated_app_dir):
         pass
+
+
+@pytest.mark.parametrize("legacy_selection", [None, '["terminal"]'])
+def test_no_channel_argument_starts_both_even_with_legacy_setting(
+    harness, isolated_app_dir, monkeypatch, legacy_selection
+):
+    """验证无入口参数始终启动两端，旧私有配置不能改变默认行为。
+
+    作用:
+        覆盖直接运行命令以及用户保留旧 KAIROS_CHANNELS 配置的升级场景。
+    参数:
+        harness: 保留真实程序装配和运行锁的离线依赖。
+        isolated_app_dir: 隔离配置目录。
+        monkeypatch: 恢复实际设置读取并隔离环境变量。
+        legacy_selection: 可选的旧入口配置值。
+    返回:
+        None。
+    行为说明:
+        1. 从真实临时 .env 读取模型配置，只用替身阻止网络与界面交互。
+        2. 检查终端和微信均实际进入启动流程，仍只创建一份应用服务。
+    """
+    for name in (*Settings.model_fields, "kairos_channels"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.upper(), raising=False)
+    contents = "KAIROS_API_KEY=synthetic-key\nGATEWAY_BASE_URL=https://offline.invalid/v1\nKAIROS_MODEL=offline\n"
+    if legacy_selection is not None:
+        contents += f"KAIROS_CHANNELS={legacy_selection}\n"
+    (isolated_app_dir / ".env").write_text(contents, encoding="utf-8")
+    monkeypatch.setattr(program, "Settings", Settings)
+
+    assert program.run() == 0
+    assert "terminal" in harness.events
+    assert "weixin-start" in harness.events
+    assert harness.events.count("service") == 1
 
 
 def test_terminal_session_choice_and_detach_do_not_stop_weixin_early(harness):

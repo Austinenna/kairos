@@ -233,17 +233,17 @@ KAIROS_TOOL_FACTORIES=["kairos_todo.tools:build_tools"]
 统一启动方式：
 
 ```bash
-# 沿用 ~/.kairos/.env 中的 KAIROS_CHANNELS，默认只启用终端
+# 默认在同一个进程中同时启动终端和微信
 uv run kairos
 
-# 本次在同一个进程中同时启用终端和微信
-uv run kairos --channels terminal,weixin
+# 只启动终端
+uv run kairos --channels terminal
 
 # 仅运行微信模块，仍使用同一套程序和后台
 uv run kairos --channels weixin
 ```
 
-也可在私有配置中设置 `KAIROS_CHANNELS=["terminal","weixin"]`，之后直接运行 `uv run kairos`。终端的 `--continue`、`--session ID` 只选择终端会话，不改变微信绑定。`/exit` 或输入结束停止整个程序；`/detach` 停用终端输入后让已启动的微信继续运行。模型生成时 Ctrl+C 只取消当前终端请求；正常退出等待收发、执行与记忆收尾，再释放进程锁。没有安装系统自启动，也不承诺关闭承载程序的终端窗口后继续在线。
+不传 `--channels` 时固定启动两端，传入时只启动参数选择的入口；旧 `KAIROS_CHANNELS` 配置不再影响入口选择，无需修改个人配置文件。终端的 `--continue`、`--session ID` 只选择终端会话，不改变微信绑定。`/exit` 或输入结束停止整个程序；`/detach` 停用终端输入后让已启动的微信继续运行。模型生成时 Ctrl+C 只取消当前终端请求；正常退出等待收发、执行与记忆收尾，再释放进程锁。没有安装系统自启动，也不承诺关闭承载程序的终端窗口后继续在线。
 
 微信目前只接受本人私聊文字，支持 `/new`、`/session`、`/retry`、`/help`。首用可复用探针登录；凭据和游标保留在微信接入侧，发送失败只处理缓存答案，不重跑模型和工具。操作、恢复及实际验证结果见 [微信通道](docs/微信通道.md)。本轮通过 847 项离线测试和真实 PTY 的合成端到端验收；新版真实手机与上游模型联调尚未完成。旧 `python -m kairos.weixin run` 是仅微信模式的兼容命令，不要与另一 Kairos 进程同时启动；旧版本和探针需先退出。
 

@@ -9,7 +9,7 @@ def main() -> None:
         SystemExit: 程序启动或运行失败时以非零状态退出。
     行为说明:
         1. 帮助和参数互斥校验不读取用户配置或启动入口。
-        2. 未指定入口时读取配置中的 KAIROS_CHANNELS。
+        2. 未指定 --channels 时同时启用终端和微信，指定时按参数选择。
     """
     import argparse
 
@@ -19,7 +19,9 @@ def main() -> None:
     sessions = parser.add_mutually_exclusive_group()
     sessions.add_argument("--continue", dest="resume_latest", action="store_true", help="终端继续最近的会话")
     sessions.add_argument("--session", dest="session_id", metavar="ID", help="终端恢复指定会话（支持唯一 ID 前缀）")
-    parser.add_argument("--channels", type=parse_channels, metavar="terminal,weixin", help="本次启用的入口，覆盖配置")
+    parser.add_argument(
+        "--channels", type=parse_channels, metavar="terminal,weixin", help="选择启动入口；省略时启动终端和微信"
+    )
     args = parser.parse_args()
     status = run(session_id=args.session_id, resume_latest=args.resume_latest, channels=args.channels)
     if status:

@@ -181,7 +181,7 @@ SQLite 与 runtime.messages：保存原始消息和工具结果
 
 单进程串行代码及离线集成已完成。`program.py` 装配唯一 `ApplicationService`；其固定工作线程创建、切换、执行和关闭 Runtime。各入口使用独立 `RuntimeClient` 保存会话选择与结果快照；统一请求库保存来源、Session、状态与精确 Turn 关联。微信接收线程和处理投递线程各自拥有通道 SQLite 连接，接收不等待模型任务；业务 Runtime 仅在应用工作线程使用。
 
-统一启动 `uv run kairos`；配置 `KAIROS_CHANNELS=["terminal","weixin"]` 或本次传 `--channels terminal,weixin` 同时启用两个入口。默认配置只有 terminal，未擅自修改用户私有配置。`python -m kairos.weixin login` 仅登录；旧 run 命令委托统一程序的仅微信模式。`/exit`、Ctrl+D 结束整个程序，`/detach` 仅停用终端输入并留下微信；生成中 Ctrl+C 只取消终端当前请求。锁保护整个进程直到所有收尾结束，不在两个内部入口之间互斥。
+直接运行 `uv run kairos` 默认同时启动终端和微信；显式 `--channels terminal`、`--channels weixin` 或 `--channels terminal,weixin` 按参数选择。旧 `KAIROS_CHANNELS` 不再参与入口选择，未修改用户私有配置。`python -m kairos.weixin login` 仅登录；旧 run 命令委托统一程序的仅微信模式。`/exit`、Ctrl+D 结束整个程序，`/detach` 仅停用终端输入并留下微信；生成中 Ctrl+C 只取消终端当前请求。锁保护整个进程直到所有收尾结束，不在两个内部入口之间互斥。
 
 已接收任务按 request_id 去重，按入口和 Session 区分；/new 等控制操作也经统一调度。恢复时只按已持久保存的 Turn 关联取回完成答案；不确定的已执行任务不自动重跑。微信自己的重复消息、缓存重发、未知投递保守处理继续保留。普通展示事件只包含受控字段，不转发完整模型请求或工具载荷。
 

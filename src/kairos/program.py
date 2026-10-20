@@ -98,7 +98,7 @@ def run(
         集中管理配置、唯一应用服务、终端和微信模块的生命周期。
     参数:
         session_id, resume_latest: 仅用于终端的启动会话选择，二者互斥。
-        channels: 可选入口覆盖，省略时读取 KAIROS_CHANNELS。
+        channels: 显式选择的入口，省略时同时启用终端和微信；不从配置文件选择入口。
         settings: 可注入的设置，省略时在持锁后读取用户配置。
         max_messages, idle_timeout: 微信验收输入数及空闲时限。
     返回:
@@ -163,7 +163,7 @@ def run(
     try:
         with application_lock(config.get_app_dir(), label="Kairos"):
             settings = settings or Settings()
-            selected = parse_channels(channels if channels is not None else settings.kairos_channels)
+            selected = parse_channels(channels if channels is not None else ("terminal", "weixin"))
             if session_id is not None and resume_latest:
                 print("--session 和 --continue 不能同时使用。", flush=True)
                 return 1

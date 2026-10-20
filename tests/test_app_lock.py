@@ -271,11 +271,9 @@ def test_cli_holds_lock_while_run_executes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "get_app_dir", lambda: tmp_path)
     monkeypatch.setattr(program, "ApplicationService", Service)
-    monkeypatch.setattr(
-        program, "Settings", lambda: SimpleNamespace(kairos_api_key="synthetic", kairos_channels=["terminal"])
-    )
+    monkeypatch.setattr(program, "Settings", lambda: SimpleNamespace(kairos_api_key="synthetic"))
     monkeypatch.setattr(cli, "run", fake_run)
-    monkeypatch.setattr(sys, "argv", ["kairos", "--session", "example"])
+    monkeypatch.setattr(sys, "argv", ["kairos", "--channels", "terminal", "--session", "example"])
     main()
     assert selected == [("terminal", {"session_id": "example", "resume_latest": False})]
     assert len(calls) == 1 and calls[0]["allow_detach"] is False
