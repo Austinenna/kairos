@@ -1,0 +1,54 @@
+{
+  "version": "1.0",
+  "date": "2026-10-20",
+  "master_byte_identical_to_original": true,
+  "files": [
+    {
+      "file": "kairos-actions.png",
+      "width": 1536,
+      "height": 1024,
+      "mode": "RGB",
+      "sha256": "6883e59f1df32f2dc507c2678a83268410fbcd7d9dd5301528acba2ad57ea79b"
+    },
+    {
+      "file": "kairos-avatar.png",
+      "width": 1254,
+      "height": 1254,
+      "mode": "RGB",
+      "sha256": "78c274ba7615f43e85d1813d2a6eab7cb01694ce947afc2a7724abe1cd23a92d"
+    },
+    {
+      "file": "kairos-cutout.png",
+      "width": 1254,
+      "height": 1254,
+      "mode": "RGBA",
+      "sha256": "fecd97c9e718627bb8b735be650acb467e518aa9db3e2af67ad12ca8797152c5",
+      "alpha_extrema": [
+        0,
+        255
+      ],
+      "transparent_pixel_count": 906920
+    },
+    {
+      "file": "kairos-expressions.png",
+      "width": 1536,
+      "height": 1024,
+      "mode": "RGB",
+      "sha256": "d6908e1bd8e6ed8d04069d01851b24b7a1d9bd253931f048120c2ae0d1a49c85"
+    },
+    {
+      "file": "kairos-master.png",
+      "width": 1254,
+      "height": 1254,
+      "mode": "RGB",
+      "sha256": "e7896ef797a306f2b6ca3e393b8a212d1db85146a71c55a72e3c792720d3f7d2"
+    },
+    {
+      "file": "kairos-turnaround.png",
+      "width": 2008,
+      "height": 783,
+      "mode": "RGB",
+      "sha256": "a681cbd0e436726d09863037001b9bb09e40cfa64ddbdfc91f61000574cd8ecf"
+    }
+  ]
+}
