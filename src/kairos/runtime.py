@@ -11,6 +11,7 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -415,14 +416,16 @@ class AgentRuntime:
         ):
             self.memory_extractor = MemoryExtractor(memory_store)
 
-    def _prepare_messages(self, messages: list[dict]) -> list[dict]:
-        """组装每次模型请求的记忆参考和当前工具能力。
+    def _prepare_messages(self, messages: list[dict], *, turn_time: datetime) -> list[dict]:
+        """组装每次模型请求的记忆、工具能力和本轮时间参考。
 
         作用:
-            为新请求和工具续轮生成视图，使旧会话也使用当前加载的工具规则。
+            为新请求和工具续轮生成视图，使旧会话也使用当前工具规则及本轮时间。
 
         参数:
             messages: 当前会话的原始模型消息列表。
+            turn_time: 本轮用户输入开始处理时捕获的本机时间，包含本地时区偏移。
+                同一用户回合的所有请求共用此值。
 
         返回:
             独立的请求消息列表 (list[dict])，不会改写原始历史。
@@ -430,9 +433,26 @@ class AgentRuntime:
         行为说明:
             1. 记忆启用时先生成记忆视图，未启用时直接使用原始消息作为输入。
             2. 始终补充当前工具能力；业务模块卸载后，其请求期规则不再加入。
+            3. 在请求副本的首条 system 中补充本轮日期、星期、时间和时区，
+               不重新读取时钟，不向原始会话消息写入动态信息。
         """
         request = self._memory_context(messages) if self._memory_context is not None else messages
-        return prepare_tool_messages(request, self.tool_registry)
+        request = prepare_tool_messages(request, self.tool_registry)
+        weekday = "一二三四五六日"[turn_time.weekday()]
+        time_context = (
+            "[本轮时间参考]\n"
+            f"本机当前时间：{turn_time.isoformat(timespec='seconds')}（星期{weekday}）。\n"
+            f"本机时区：{turn_time.tzname()}（UTC 偏移 {turn_time.strftime('%z')}）。\n"
+            "以上时间由运行时在本轮用户输入开始处理时提供，同一轮工具调用及后续模型请求保持一致。\n"
+            "理解当前用户消息中的今天、明天、昨天等相对时间时，以此为参照；"
+            "用户明确指定其他日期或时区时按用户要求处理。此参考不代表历史消息发生的时间。"
+        )
+        system = next(message for message in request if message.get("role") == "system")
+        if isinstance(system["content"], list):
+            system["content"].append({"type": "text", "text": time_context})
+        else:
+            system["content"] = f"{system['content']}\n\n{time_context}"
+        return request
 
     def _remember(self, content: str) -> dict:
         """把当前用户明确要求保存的内容交给核心记忆存储。
@@ -934,7 +954,8 @@ class AgentRuntime:
         行为说明:
             1. 拒绝重复执行，清空上次结果并检查运行状态、输入、标签及图片预算。
                这些准入检查发生在写入 Turn 之前；图片随后组装为完整用户消息。
-            2. 在存储中创建 Turn 和输入消息，再加入内存上下文并启动记录器。
+            2. 捕获一次本机当前时间与时区，供本轮所有模型请求共用；
+               在存储中创建 Turn 和输入消息，再加入内存上下文并启动记录器。
                关联回调成功返回后才允许模型和工具执行；回调失败沿用回合失败收尾。
                循环负责在实际边界保存步骤、助手消息及工具调用和结果。
             3. 成功时保存回合完成状态，并汇总事件生成返回值。执行失败时，若
@@ -974,6 +995,7 @@ class AgentRuntime:
 
         original_length = len(self.messages)
         user_message = {"role": "user", "content": content}
+        turn_time = datetime.now().astimezone()
         turn = self.session_store.begin_turn(self.session_id, user_message, title_hint=prompt.strip() or "图片对话")
         self.messages.append(user_message)
         self.last_input_retained = True
@@ -1008,7 +1030,7 @@ class AgentRuntime:
                     logger=record,
                     on_event=on_event,
                     recorder=recorder,
-                    prepare_messages=self._prepare_messages,
+                    prepare_messages=partial(self._prepare_messages, turn_time=turn_time),
                 )
             self.session_store.finish_turn(turn.turn_id, "completed", "final_answer")
         except (Exception, KeyboardInterrupt) as error:
