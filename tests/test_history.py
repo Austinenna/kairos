@@ -599,3 +599,57 @@ def test_history_operations_do_not_mutate_records_or_session_activity(store, rea
     assert "\n".join(connection.iterdump()) == before
     assert store.latest_session() == latest
     assert connection.in_transaction is False
+
+
+@pytest.mark.parametrize(
+    ("zone", "timestamp", "expected"),
+    [
+        ("Asia/Shanghai", "2026-10-20T02:58:08.178055+00:00", "2026-10-20T10:58:08.178055+08:00"),
+        ("Asia/Shanghai", "2026-10-19T16:20:00+00:00", "2026-10-20T00:20:00+08:00"),
+        ("UTC", "2026-10-20T02:58:00+00:00", "2026-10-20T02:58:00+00:00"),
+        ("America/New_York", "2026-07-20T02:58:00+00:00", "2026-07-19T22:58:00-04:00"),
+        ("America/New_York", "2026-01-20T02:58:00+00:00", "2026-01-19T21:58:00-05:00"),
+    ],
+)
+def test_history_outputs_local_time_without_changing_storage(
+    store, reader, connection, monkeypatch, zone, timestamp, expected
+):
+    """验证历史搜索及阅读统一返回本地时间，覆盖跨日和夏令时。
+
+    作用:
+        回归 UTC 时间被误标为北京时间的问题，保证只读查询不改原始数据。
+    参数:
+        store、reader、connection: 隔离的会话存储、查询服务及连接。
+        monkeypatch: 临时设置进程时区的测试夹具。
+        zone、timestamp、expected: 本地时区、原始时间及预期输出。
+    返回:
+        无返回值(None)。
+    行为说明:
+        1. 通过真实工具入口核对回合、消息和续读输出，并比较查询前后数据库快照。
+        2. 测试结束恢复进程时区，不依赖运行测试的机器位置或当前季节。
+    """
+    import time
+
+    session = new_session(store)
+    turn = record_turn(store, session.session_id, "时间回归", "回复")
+    set_turn_time(connection, turn.turn_id, timestamp)
+    with connection:
+        connection.execute("UPDATE session_messages SET created_at = ? WHERE turn_id = ?", (timestamp, turn.turn_id))
+    snapshot = list(connection.iterdump())
+    try:
+        with monkeypatch.context() as patch:
+            patch.setenv("TZ", zone)
+            time.tzset()
+            result = reader.search_history(session_id=session.session_id)
+            assert result["hits"][0]["created_at"] == expected
+            paged_reader = HistoryReader(store, page_chars=2)
+            page = paged_reader.read_session(session.session_id, turn_id=turn.turn_id)
+            while True:
+                assert page["selected_turns"][0]["created_at"] == expected
+                assert all(message["created_at"] == expected for message in page["messages"])
+                if not page["has_more"]:
+                    break
+                page = paged_reader.read_session(session.session_id, cursor=page["next_cursor"])
+    finally:
+        time.tzset()
+    assert list(connection.iterdump()) == snapshot
