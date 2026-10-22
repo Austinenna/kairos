@@ -6,8 +6,8 @@ from threading import Event, Thread
 
 import pytest
 
-import kairos.memory as memory_module
-from kairos.memory import MemoryStore
+import kairos.legacy_memory as memory_module
+from kairos.legacy_memory import MemoryStore
 from kairos.memory_extraction import ExtractionJob, MemoryExtractor
 
 

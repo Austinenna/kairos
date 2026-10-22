@@ -10,7 +10,7 @@ import pytest
 from kairos import runtime as runtime_module
 from kairos.config import Settings
 from kairos.context import REFERENCE_HEADER
-from kairos.memory import MemoryStore
+from kairos.legacy_memory import MemoryStore
 from kairos.providers import OpenAICompatibleModel
 from kairos.runtime import create_runtime
 

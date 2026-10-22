@@ -14,8 +14,8 @@ from types import ModuleType
 import pytest
 
 from kairos.config import Settings, ToolSettings
+from kairos.legacy_tools import load_tool_registry
 from kairos.runtime import create_runtime
-from kairos.tools import load_tool_registry
 
 TOOL_CONTEXT_HEADER = "【Kairos 当前工具能力】"
 FACTORY_MODULE_NAME = "kairos_test_tool_module"

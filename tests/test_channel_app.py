@@ -17,7 +17,7 @@ from kairos.channel_app import ChannelApp, ReplyDeliveryError, split_reply
 from kairos.channels.base import InboundMessage, ReceiveBatch, SendReceipt, TransportError
 from kairos.channels.store import INTERRUPTED_REPLY, ChannelStore
 from kairos.context import REFERENCE_HEADER
-from kairos.memory import MemoryStore
+from kairos.legacy_memory import MemoryStore
 from kairos.runtime import create_runtime
 from kairos_todo import list_todos
 

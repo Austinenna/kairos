@@ -26,14 +26,14 @@ from .execution import TurnRecorder
 from .history import HistoryReader
 from .history_tools import HISTORY_TOOL_SCHEMAS
 from .images import ImageInput, redact_images, validate_image_budget
-from .memory import MemoryStore
+from .legacy_memory import MemoryStore
+from .legacy_tools import ToolRegistry, load_tool_registry, prepare_tool_messages
 from .memory_extraction import ExtractionJob, MemoryExtractor
 from .memory_tools import PRIMARY_MEMORY_TOOL_SCHEMAS
 from .observability import JsonlLogger
 from .pricing import Usage, usage_from_normalized
 from .providers import AnthropicMessagesModel, OpenAICompatibleModel
 from .sessions import SessionInfo, SessionStore
-from .tools import ToolRegistry, load_tool_registry, prepare_tool_messages
 from .usage_stats import SessionUsage, summarize_usage
 
 DEFAULT_SYSTEM_PROMPT = """你是 Kairos，用户的个人助手。回答简洁直接，使用中文。

@@ -15,7 +15,7 @@ from time import perf_counter
 from .agent_loop import AgentLoopLimitError, Model, run_agent_turn
 from .context import ContextBuilder
 from .images import redact_images
-from .memory import MemoryIndexUpdateError, MemoryStore
+from .legacy_memory import MemoryIndexUpdateError, MemoryStore
 from .memory_tools import EXTRACTION_MEMORY_TOOL_SCHEMAS
 
 EXTRACTION_PROMPT = """你是 Kairos 的自动记忆提取器，将长期信息分流到 CORE 或 topics。

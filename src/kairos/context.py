@@ -4,7 +4,7 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from .memory import MemoryStore
+    from .legacy_memory import MemoryStore
 
 
 REFERENCE_HEADER = "【Kairos 全局记忆参考】"
