@@ -33,7 +33,10 @@ def test_tool_result_goes_back_to_model_before_final_answer():
     messages = [{"role": "user", "content": "1+2"}]
     saved = []
 
-    result = run_turn(messages, model, [], {"add": lambda a, b: a + b}, on_message=saved.append)
+    def save(message, usage):
+        saved.append(message)
+
+    result = run_turn(messages, model, [], {"add": lambda a, b: a + b}, on_message=save)
 
     assert result.content == "结果是 3"
     assert [m["role"] for m in messages] == ["user", "assistant", "tool", "assistant"]

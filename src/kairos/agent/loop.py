@@ -27,7 +27,7 @@ def run_turn(
     *,
     prepare: Callable[[list[dict]], list[dict]] | None = None,
     on_text: Callable[[str], None] | None = None,
-    on_message: Callable[[dict], None] | None = None,
+    on_message: Callable[[dict, Usage | None], None] | None = None,
     max_requests: int = 10,
 ) -> TurnResult:
     """执行一轮对话。调用前，用户消息应该已经在 messages 末尾。
@@ -39,7 +39,7 @@ def run_turn(
         handlers: 工具名 → 执行函数。
         prepare: 每次请求前把历史加工成请求视图（加记忆、时间等），不改原历史。
         on_text: 正文片段回调，用于流式显示。
-        on_message: 每追加一条消息就调用一次，用于即时保存。
+        on_message: 每追加一条消息就调用一次，用于即时保存；助手消息会同时传入这次请求的用量。
         max_requests: 本轮最多请求模型几次。
 
     行为说明:
@@ -49,10 +49,10 @@ def run_turn(
            协议要求每个工具调用都有对应结果，否则下一次请求会被拒绝。
     """
 
-    def append(message: dict) -> None:
+    def append(message: dict, usage: Usage | None = None) -> None:
         messages.append(message)
         if on_message:
-            on_message(message)
+            on_message(message, usage)
 
     usages: list[Usage] = []
     for _ in range(max_requests):
@@ -60,7 +60,7 @@ def run_turn(
         response = model.stream(request, tools, on_text)
         if response.usage:
             usages.append(response.usage)
-        append(response.to_message())
+        append(response.to_message(), response.usage)
 
         if not response.tool_calls:
             return TurnResult(content=response.content, usages=usages)
