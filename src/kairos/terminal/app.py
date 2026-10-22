@@ -1,9 +1,12 @@
 """终端主循环：读输入 → 执行命令或发给 Conversation → 显示结果。
 
-运行：uv run kairos [--continue | --session ID]
+运行：uv run kairos [--continue | --session ID] [--channels terminal,weixin]
 """
 
 import argparse
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -13,6 +16,7 @@ from ..conversation import Conversation
 from ..images import Image, text_of
 from ..models.catalog import model_info
 from ..services import Services, open_services
+from ..wechat.runner import WeixinRunner
 from .prompt import Prompt
 from .render import Renderer
 
@@ -33,7 +37,9 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--continue", dest="resume_latest", action="store_true", help="继续最近的会话")
     group.add_argument("--session", metavar="ID", help="恢复指定会话（ID 可以只写开头几位）")
+    parser.add_argument("--channels", default="terminal,weixin", help="启动哪些入口，默认 terminal,weixin")
     args = parser.parse_args()
+    channels = set(args.channels.split(","))
 
     try:
         settings = Settings()
@@ -41,12 +47,46 @@ def main() -> None:
         raise SystemExit(f"配置不完整，请检查 ~/.kairos/.env：\n{error}") from None
     services = open_services(settings, get_app_dir())
     renderer = Renderer()
+    weixin = start_weixin(services, renderer) if "weixin" in channels else None
     try:
-        run(services, renderer, open_conversation(services, args))
+        if "terminal" in channels:
+            run(services, renderer, open_conversation(services, args), weixin)
+        elif weixin:
+            wait_for_weixin(services, renderer, weixin)
     finally:
+        if weixin:
+            weixin.stop()
         renderer.info("正在整理最后一轮的记忆……")
-        services.close()
-        show_notices(services, renderer)
+        with services.lock:  # 等微信正在处理的那条消息结束
+            services.close()
+        show_notices(services, renderer, weixin)
+
+
+def start_weixin(services: Services, renderer: Renderer) -> WeixinRunner | None:
+    """启动微信入口。没登录或凭据读不了时只提示，终端照常使用。"""
+    data_dir = get_app_dir() / "channels" / "weixin"
+    if not (data_dir / "account.json").exists():
+        renderer.info("微信未登录，本次只启动终端。登录：uv run --with 'qrcode[pil]' python -m kairos.wechat")
+        return None
+    try:
+        weixin = WeixinRunner(services, data_dir)
+    except (OSError, ValueError, KeyError) as error:
+        renderer.error(f"微信入口没有启动：{type(error).__name__}: {error}")
+        return None
+    weixin.start()
+    renderer.info("微信入口已启动。")
+    return weixin
+
+
+def wait_for_weixin(services: Services, renderer: Renderer, weixin: WeixinRunner) -> None:
+    """只启动微信时，主线程在这里显示状态，按 Ctrl+C 退出。"""
+    renderer.info("Kairos 正在运行微信入口，按 Ctrl+C 退出。")
+    try:
+        while weixin.thread.is_alive():
+            show_notices(services, renderer, weixin)
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        pass
 
 
 def open_conversation(services: Services, args: argparse.Namespace) -> Conversation:
@@ -57,13 +97,19 @@ def open_conversation(services: Services, args: argparse.Namespace) -> Conversat
     return Conversation.create(services)
 
 
-def run(services: Services, renderer: Renderer, conversation: Conversation) -> None:
+def run(services: Services, renderer: Renderer, conversation: Conversation, weixin: WeixinRunner | None) -> None:
     prompt = Prompt()
     renderer.info(f"Kairos · {conversation.session.title} · 输入 /help 查看命令")
     while True:
-        show_notices(services, renderer)
+        show_notices(services, renderer, weixin)
+        status = "微信那边正在回复……"
+        if services.lock.acquire(blocking=False):  # 微信正在用数据库时不等它，状态行先显示提示
+            try:
+                status = status_line(conversation)
+            finally:
+                services.lock.release()
         try:
-            text, images = prompt.read(status=status_line(conversation))
+            text, images = prompt.read(status=status)
         except KeyboardInterrupt:  # 输入时按 Ctrl+C：清空这次输入，继续
             continue
         except EOFError:  # Ctrl+D
@@ -74,12 +120,26 @@ def run(services: Services, renderer: Renderer, conversation: Conversation) -> N
             command, _, argument = text.partition(" ")
             if command == "/exit":
                 return
-            try:
-                conversation = run_command(command, argument.strip(), conversation, services, renderer)
-            except (ValueError, OSError) as error:  # 例如会话 ID 不存在、文件读不了
-                renderer.error(str(error))
+            with taking_turn(services, renderer):
+                try:
+                    conversation = run_command(command, argument.strip(), conversation, services, renderer)
+                except (ValueError, OSError) as error:  # 例如会话 ID 不存在、文件读不了
+                    renderer.error(str(error))
         elif text or images:
-            send(conversation, renderer, text, images)
+            with taking_turn(services, renderer):
+                send(conversation, renderer, text, images)
+
+
+@contextmanager
+def taking_turn(services: Services, renderer: Renderer) -> Iterator[None]:
+    """拿到 services.lock 再处理终端输入；微信正在回复时先提示，等它结束。"""
+    if not services.lock.acquire(blocking=False):
+        renderer.info("微信那边正在回复，稍等……")
+        services.lock.acquire()
+    try:
+        yield
+    finally:
+        services.lock.release()
 
 
 def send(conversation: Conversation, renderer: Renderer, text: str, images: list[Image]) -> None:
@@ -148,7 +208,9 @@ def status_line(conversation: Conversation) -> str:
     )
 
 
-def show_notices(services: Services, renderer: Renderer) -> None:
-    """显示后台记忆提取的结果。"""
-    for notice in services.extractor.drain_notices() if services.extractor else []:
+def show_notices(services: Services, renderer: Renderer, weixin: WeixinRunner | None = None) -> None:
+    """显示后台记忆提取和微信入口的状态。"""
+    notices = services.extractor.drain_notices() if services.extractor else []
+    notices += weixin.drain_notices() if weixin else []
+    for notice in notices:
         renderer.info(f"（{notice}）")

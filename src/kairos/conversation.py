@@ -54,6 +54,8 @@ class Conversation:
             if on_message:
                 on_message(message)
 
+        # 重新载入历史：同一个会话可能刚在另一个入口（终端或微信）里有了新消息。
+        self.messages = self.services.sessions.load_messages(self.session.id)
         content: str | list[dict] = prompt
         if images:
             # 有图片时 content 是内容块列表：先文字，再逐张图片。
