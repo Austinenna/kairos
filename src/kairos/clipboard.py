@@ -1,7 +1,10 @@
-"""macOS 系统剪贴板读取；普通终端文字粘贴不调用此模块。"""
+"""读取 macOS 系统剪贴板：截图、Finder 里复制的文件，或者文字。
+
+Python 标准库读不了剪贴板里的图片，这里用 macOS 自带的 osascript 运行一段 JavaScript，
+调用系统的 NSPasteboard 接口，把结果以 JSON 返回。
+"""
 
 import base64
-import binascii
 import json
 import subprocess
 import sys
@@ -10,46 +13,34 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 
-@dataclass(frozen=True)
+@dataclass
 class ClipboardContent:
     text: str = ""
-    paths: tuple[Path, ...] = ()
-    image: bytes | None = None
+    paths: tuple[Path, ...] = ()  # Finder 里复制的文件
+    image: bytes | None = None  # 截图等位图，统一转成 PNG
 
 
-class ClipboardError(ValueError):
-    """读取失败时可直接在输入区显示的错误。"""
+class ClipboardError(RuntimeError):
+    """读取失败，消息可以直接显示给用户。"""
 
 
-# 脚本固定不拼接文件名或剪贴板文字，返回数据通过 JSON 传递。
-# Finder 复制文件优先返回 file URL；截图则由 AppKit 解码再转 PNG。
-_MACOS_SCRIPT = r"""
+# 优先取 Finder 复制的文件路径；没有文件时再取图片，转成 PNG 后用 base64 返回。
+_SCRIPT = r"""
 ObjC.import('AppKit');
-ObjC.import('Foundation');
 const pb = $.NSPasteboard.generalPasteboard;
 const result = {text: '', urls: [], image: null};
 const items = pb.pasteboardItems;
-if (ObjC.unwrap(items)) {
-  for (let i = 0; i < items.count; i++) {
-    const value = ObjC.unwrap(items.objectAtIndex(i).stringForType('public.file-url'));
-    if (typeof value === 'string' && value) result.urls.push(value);
-  }
+for (let i = 0; i < items.count; i++) {
+  const url = ObjC.unwrap(items.objectAtIndex(i).stringForType('public.file-url'));
+  if (url) result.urls.push(url);
 }
-const text = ObjC.unwrap(pb.stringForType('public.utf8-plain-text'));
-if (typeof text === 'string') result.text = text;
+result.text = ObjC.unwrap(pb.stringForType('public.utf8-plain-text')) || '';
 if (result.urls.length === 0) {
   const image = $.NSImage.alloc.initWithPasteboard(pb);
   if (ObjC.unwrap(image)) {
-    const tiff = image.TIFFRepresentation;
-    const rep = ObjC.unwrap(tiff) ? $.NSBitmapImageRep.imageRepWithData(tiff) : null;
-    const png = ObjC.unwrap(rep) ? rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $()) : null;
-    if (ObjC.unwrap(png)) {
-      if (png.length > 20 * 1024 * 1024) {
-        result.error = '剪贴板图片超过 20 MiB，请先保存为文件并缩小图片。';
-      } else {
-        result.image = ObjC.unwrap(png.base64EncodedStringWithOptions(0));
-      }
-    }
+    const rep = $.NSBitmapImageRep.imageRepWithData(image.TIFFRepresentation);
+    const png = rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $());
+    result.image = ObjC.unwrap(png.base64EncodedStringWithOptions(0));
   }
 }
 JSON.stringify(result);
@@ -57,46 +48,17 @@ JSON.stringify(result);
 
 
 def read_clipboard() -> ClipboardContent:
-    """读取当前图片、Finder 文件 URL 或文字，最多等待 5 秒。"""
     if sys.platform != "darwin":
-        raise ClipboardError("当前只支持 macOS 剪贴板图片；也可以粘贴本地图片路径。")
+        raise ClipboardError("目前只支持 macOS 剪贴板；也可以把图片文件拖进输入框。")
     try:
-        result = subprocess.run(
-            ["osascript", "-l", "JavaScript", "-e", _MACOS_SCRIPT],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=True,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise ClipboardError("读取剪贴板超时，请重试或粘贴图片文件路径。") from exc
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise ClipboardError("无法读取系统剪贴板，请重试或粘贴图片文件路径。") from exc
-    try:
-        content = json.loads(result.stdout)
-        if not isinstance(content, dict):
-            raise ValueError("invalid clipboard object")
-        if content.get("error"):
-            raise ClipboardError(str(content["error"]))
-        if not isinstance(content.get("text", ""), str):
-            raise ValueError("invalid clipboard text")
-        if not isinstance(content.get("urls", []), list):
-            raise ValueError("invalid clipboard URLs")
-        paths = []
-        for value in content.get("urls", []):
-            if not isinstance(value, str):
-                raise ValueError("invalid file URL")
-            url = urlparse(value)
-            if url.scheme != "file" or url.netloc not in ("", "localhost"):
-                raise ValueError("unsupported file URL")
-            paths.append(Path(unquote(url.path)))
-        image = content.get("image")
-        return ClipboardContent(
-            text=content.get("text") or "",
-            paths=tuple(paths),
-            image=base64.b64decode(image, validate=True) if image else None,
-        )
-    except ClipboardError:
-        raise
-    except (ValueError, TypeError, AttributeError, binascii.Error) as exc:
-        raise ClipboardError("剪贴板内容无法解析，请重新复制图片。") from exc
+        output = subprocess.run(
+            ["osascript", "-l", "JavaScript", "-e", _SCRIPT], capture_output=True, text=True, timeout=5, check=True
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ClipboardError(f"读取剪贴板失败：{type(error).__name__}") from error
+    data = json.loads(output)
+    return ClipboardContent(
+        text=data["text"],
+        paths=tuple(Path(unquote(urlparse(url).path)) for url in data["urls"]),
+        image=base64.b64decode(data["image"]) if data["image"] else None,
+    )

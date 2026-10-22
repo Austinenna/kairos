@@ -18,7 +18,6 @@ dependencies = [
 
 [project.scripts]
 kairos = "kairos:main"
-kairos-legacy = "kairos.program:legacy_main"  # 旧版，重构完成后删除
 
 [build-system]
 requires = ["hatchling"]
