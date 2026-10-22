@@ -10,7 +10,7 @@ from openai import OpenAI
 from PIL import Image
 
 from kairos.context import REFERENCE_HEADER
-from kairos.images import prepare_image
+from kairos.legacy_images import prepare_image
 from kairos.providers import AnthropicMessagesModel, OpenAICompatibleModel
 from kairos.runtime import create_runtime
 

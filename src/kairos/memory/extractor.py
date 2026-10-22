@@ -9,6 +9,7 @@ from queue import Empty, Queue
 from threading import Thread
 
 from ..agent import run_turn
+from ..images import text_of
 from ..models import Model
 from ..tools.memory import extraction_memory_tools
 from .store import MemoryStore
@@ -85,9 +86,9 @@ def recent_dialogue(messages: list[dict], turns: int = RECENT_TURNS) -> str:
     for number, start in enumerate(starts):
         end = starts[number + 1] if number + 1 < len(starts) else len(messages)
         lines = [
-            f"{'用户' if message['role'] == 'user' else '助手'}：{message['content']}"
+            f"{'用户' if message['role'] == 'user' else '助手'}：{text_of(message['content'])}"
             for message in messages[start:end]
-            if message["role"] in ("user", "assistant") and isinstance(message["content"], str) and message["content"]
+            if message["role"] in ("user", "assistant") and message["content"]
         ]
         label = "【本轮】" if number == len(starts) - 1 else "【之前】"
         sections.append(label + "\n" + "\n".join(lines))

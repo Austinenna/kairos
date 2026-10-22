@@ -1,7 +1,9 @@
 """历史会话工具：让模型搜索和阅读过去的对话。只读，不切换当前会话。"""
 
+import json
 import sqlite3
 
+from ..images import text_of
 from .registry import Toolset, tool_schema
 
 SEARCH_HISTORY = tool_schema(
@@ -37,7 +39,7 @@ def history_tools(db: sqlite3.Connection) -> Toolset:
         conditions = " AND ".join("json_extract(m.message, '$.content') LIKE ?" for _ in words)
         rows = db.execute(
             f"""SELECT m.session_id, s.title, m.role, m.created_at,
-                       json_extract(m.message, '$.content') AS content
+                       json_extract(m.message, '$.content') AS content, json_type(m.message, '$.content') AS kind
                 FROM messages m JOIN sessions s ON s.id = m.session_id
                 WHERE m.role IN ('user', 'assistant') AND {conditions}
                 ORDER BY m.id DESC LIMIT ?""",
@@ -49,20 +51,21 @@ def history_tools(db: sqlite3.Connection) -> Toolset:
                 "title": row["title"],
                 "role": row["role"],
                 "time": row["created_at"],
-                "snippet": _snippet(row["content"], words[0]),
+                "snippet": _snippet(_text(row), words[0]),
             }
             for row in rows
         ]
 
     def read_session(session_id: str, offset: int = 0) -> dict:
         rows = db.execute(
-            """SELECT role, created_at, json_extract(message, '$.content') AS content
+            """SELECT role, created_at, json_extract(message, '$.content') AS content,
+                      json_type(message, '$.content') AS kind
                FROM messages
                WHERE session_id = ? AND role IN ('user', 'assistant') AND content != ''
                ORDER BY id LIMIT ? OFFSET ?""",
             (session_id, PAGE_SIZE + 1, offset),
         ).fetchall()
-        messages = [{"role": row["role"], "time": row["created_at"], "content": row["content"]} for row in rows]
+        messages = [{"role": row["role"], "time": row["created_at"], "content": _text(row)} for row in rows]
         has_more = len(messages) > PAGE_SIZE
         return {
             "messages": messages[:PAGE_SIZE],
@@ -74,6 +77,11 @@ def history_tools(db: sqlite3.Connection) -> Toolset:
         handlers={"search_history": search_history, "read_session": read_session},
         instructions=[RULES],
     )
+
+
+def _text(row: sqlite3.Row) -> str:
+    """纯文字消息原样返回；图文消息的 content 是 JSON 数组，转成不带 base64 的文字。"""
+    return text_of(json.loads(row["content"])) if row["kind"] == "array" else row["content"]
 
 
 def _snippet(content: str, word: str) -> str:

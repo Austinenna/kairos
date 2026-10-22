@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from .application_store import ApplicationStore
 from .cancellation import CancellationToken
-from .images import MAX_SESSION_BASE64_BYTES, MAX_SESSION_IMAGES, ImageInput, ImageInputError, image_budget_usage
+from .legacy_images import MAX_SESSION_BASE64_BYTES, MAX_SESSION_IMAGES, ImageInput, ImageInputError, image_budget_usage
 from .pricing import Usage, usage_from_normalized
 from .runtime import AgentRuntime, AgentTurnResult
 from .sessions import SessionInfo

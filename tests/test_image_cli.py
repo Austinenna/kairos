@@ -5,7 +5,7 @@ import io
 from PIL import Image
 
 from kairos.cli import run
-from kairos.images import prepare_image
+from kairos.legacy_images import prepare_image
 from kairos.runtime import create_runtime
 from kairos.terminal_input import InputDraft
 from kairos_todo import list_todos

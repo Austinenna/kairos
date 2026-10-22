@@ -14,7 +14,7 @@ from time import perf_counter
 
 from .agent_loop import AgentLoopLimitError, Model, run_agent_turn
 from .context import ContextBuilder
-from .images import redact_images
+from .legacy_images import redact_images
 from .legacy_memory import MemoryIndexUpdateError, MemoryStore
 from .memory_tools import EXTRACTION_MEMORY_TOOL_SCHEMAS
 

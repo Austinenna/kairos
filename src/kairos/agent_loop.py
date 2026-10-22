@@ -10,7 +10,7 @@ from time import perf_counter
 from typing import Any, Protocol, runtime_checkable
 
 from .cancellation import current_cancellation_token, raise_if_cancelled
-from .images import redact_images
+from .legacy_images import redact_images
 
 
 class Model(Protocol):

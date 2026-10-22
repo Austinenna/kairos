@@ -6,6 +6,7 @@ from functools import partial
 
 from .agent import TurnResult, run_turn
 from .agent.context import build_request
+from .images import Image
 from .models import Usage, build_model
 from .models.catalog import estimate_cost, model_info
 from .services import Services
@@ -35,6 +36,7 @@ class Conversation:
     def respond(
         self,
         prompt: str,
+        images: list[Image] | None = None,
         on_text: Callable[[str], None] | None = None,
         on_message: Callable[[dict], None] | None = None,
     ) -> TurnResult:
@@ -43,7 +45,8 @@ class Conversation:
         1. 保存用户消息，运行 Agent 循环，循环中的每条新消息都即时保存。
         2. 正常结束后，把这一轮交给后台提取记忆。
 
-        on_text 接收正文片段；on_message 在每条新消息保存后调用，界面可以用它显示工具调用。
+        images 是随这条消息一起发送的图片；on_text 接收正文片段；
+        on_message 在每条新消息保存后调用，界面可以用它显示工具调用。
         """
 
         def save_and_notify(message: dict, usage: Usage | None) -> None:
@@ -51,8 +54,13 @@ class Conversation:
             if on_message:
                 on_message(message)
 
-        self._save({"role": "user", "content": prompt})
-        self.messages.append({"role": "user", "content": prompt})
+        content: str | list[dict] = prompt
+        if images:
+            # 有图片时 content 是内容块列表：先文字，再逐张图片。
+            content = [{"type": "text", "text": prompt or "请看这些图片。"}, *(image.to_block() for image in images)]
+        user = {"role": "user", "content": content}
+        self._save(user)
+        self.messages.append(user)
         tools = self.services.tools
         # 时间和记忆在一轮开始时取一次，这一轮里多次请求模型都用同一份，前缀相同才能命中缓存。
         prepare = partial(

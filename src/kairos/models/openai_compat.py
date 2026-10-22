@@ -33,7 +33,7 @@ class OpenAICompatibleModel:
         """发起一次流式请求：正文片段边收边交给 on_text，结束后返回完整结果。"""
         request = {
             "model": self.model,
-            "messages": messages,
+            "messages": [_to_openai(message) for message in messages],
             "stream": True,
             "stream_options": {"include_usage": True},  # 让最后一帧带上用量
         }
@@ -84,6 +84,19 @@ class OpenAICompatibleModel:
             usage=usage,
             extra=extra,
         )
+
+
+def _to_openai(message: dict) -> dict:
+    """用户消息里的图片块转成 OpenAI 的 image_url（data URL）；其他消息原样发送。"""
+    if message["role"] != "user" or isinstance(message["content"], str):
+        return message
+    content = [
+        {"type": "image_url", "image_url": {"url": f"data:{block['mime_type']};base64,{block['data']}"}}
+        if block["type"] == "image"
+        else block
+        for block in message["content"]
+    ]
+    return {**message, "content": content}
 
 
 def _usage(raw) -> Usage:

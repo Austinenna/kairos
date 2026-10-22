@@ -6,7 +6,7 @@ import json
 import pytest
 from PIL import Image
 
-from kairos.images import prepare_image
+from kairos.legacy_images import prepare_image
 from kairos.runtime import create_runtime
 from kairos.terminal_input import _image_paths
 

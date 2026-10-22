@@ -23,7 +23,7 @@ from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.utils import is_dumb_terminal
 
 from .clipboard import ClipboardContent, read_clipboard
-from .images import ImageInput, load_image, prepare_image
+from .legacy_images import ImageInput, load_image, prepare_image
 
 
 @dataclass(frozen=True)

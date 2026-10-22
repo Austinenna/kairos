@@ -8,8 +8,8 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from kairos import images
-from kairos.images import (
+from kairos import legacy_images as images
+from kairos.legacy_images import (
     ImageInputError,
     image_budget_usage,
     load_image,

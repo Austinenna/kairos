@@ -7,7 +7,7 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from kairos.images import ImageInputError, load_image, prepare_image
+from kairos.legacy_images import ImageInputError, load_image, prepare_image
 from kairos.observability import JsonlLogger
 from kairos.runtime import create_runtime
 from kairos_todo import list_todos

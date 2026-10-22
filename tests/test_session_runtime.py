@@ -10,7 +10,7 @@ from PIL import Image
 import kairos.runtime as runtime_module
 from kairos.config import Settings
 from kairos.context import REFERENCE_HEADER
-from kairos.images import load_image
+from kairos.legacy_images import load_image
 from kairos.providers import AnthropicMessagesModel, OpenAICompatibleModel
 from kairos.runtime import create_runtime
 from kairos_todo import list_todos

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .images import redact_images
+from .legacy_images import redact_images
 
 
 class JsonlLogger:

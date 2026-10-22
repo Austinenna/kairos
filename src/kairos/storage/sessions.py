@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
+from ..images import text_of
 from ..models import Usage
 
 SCHEMA = """
@@ -55,6 +56,7 @@ class SessionTotals:
     usage: Usage
     cost_usd: float
     requests: int  # 模型请求次数
+    last_input_tokens: int | None  # 最近一次请求的完整输入量，用来显示上下文占用
 
 
 class SessionStore:
@@ -127,10 +129,10 @@ class SessionStore:
                 ),
             )
             self.db.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
-            if message["role"] == "user" and isinstance(message["content"], str):
+            if message["role"] == "user":
                 self.db.execute(
                     "UPDATE sessions SET title = ? WHERE id = ? AND title = ?",
-                    (message["content"].strip()[:30], session_id, DEFAULT_TITLE),
+                    (text_of(message["content"]).strip()[:30], session_id, DEFAULT_TITLE),
                 )
 
     def load_messages(self, session_id: str) -> list[dict]:
@@ -146,10 +148,16 @@ class SessionStore:
                FROM messages WHERE session_id = ? AND role = 'assistant'""",
             (session_id,),
         ).fetchone()
+        last = self.db.execute(
+            """SELECT input_tokens FROM messages
+               WHERE session_id = ? AND input_tokens IS NOT NULL ORDER BY id DESC LIMIT 1""",
+            (session_id,),
+        ).fetchone()
         return SessionTotals(
             usage=Usage(row["input"] or 0, row["cached"] or 0, row["output"] or 0, row["reasoning"] or 0),
             cost_usd=row["cost"] or 0.0,
             requests=row["requests"],
+            last_input_tokens=last["input_tokens"] if last else None,
         )
 
 

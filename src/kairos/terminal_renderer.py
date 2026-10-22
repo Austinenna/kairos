@@ -24,7 +24,7 @@ from rich.syntax import PygmentsSyntaxTheme, Syntax
 from rich.text import Text
 from rich.theme import Theme
 
-from .images import redact_images
+from .legacy_images import redact_images
 from .pricing import CONTEXT_WINDOW
 from .runtime import AgentTurnResult
 from .usage_stats import SessionUsage

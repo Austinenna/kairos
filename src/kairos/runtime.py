@@ -25,7 +25,7 @@ from .database import open_database
 from .execution import TurnRecorder
 from .history import HistoryReader
 from .history_tools import HISTORY_TOOL_SCHEMAS
-from .images import ImageInput, redact_images, validate_image_budget
+from .legacy_images import ImageInput, redact_images, validate_image_budget
 from .legacy_memory import MemoryStore
 from .legacy_tools import ToolRegistry, load_tool_registry, prepare_tool_messages
 from .memory_extraction import ExtractionJob, MemoryExtractor

@@ -99,8 +99,20 @@ def to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
                 )
             converted.append({"role": "assistant", "content": blocks})
         else:
-            converted.append({"role": "user", "content": message["content"]})
+            converted.append({"role": "user", "content": _user_content(message["content"])})
     return "\n\n".join(system_parts), converted
+
+
+def _user_content(content: str | list[dict]) -> str | list[dict]:
+    """图片块转成 Anthropic 的 base64 image 块。"""
+    if isinstance(content, str):
+        return content
+    return [
+        {"type": "image", "source": {"type": "base64", "media_type": block["mime_type"], "data": block["data"]}}
+        if block["type"] == "image"
+        else block
+        for block in content
+    ]
 
 
 def to_anthropic_tool(tool: dict) -> dict:

@@ -10,7 +10,7 @@ from prompt_toolkit.output import DummyOutput
 
 from kairos import terminal_input
 from kairos.clipboard import ClipboardContent
-from kairos.images import prepare_image
+from kairos.legacy_images import prepare_image
 from kairos.terminal_input import InputDraft, TerminalInput, TerminalInputUnsupportedError
 
 

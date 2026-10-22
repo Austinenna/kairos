@@ -9,8 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from kairos import cli, config, main, program
+from kairos import cli, config, program
 from kairos.app_lock import AppAlreadyRunning, application_lock
+from kairos.program import legacy_main as main
 
 CHILD_SCRIPT = """
 import os

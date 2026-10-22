@@ -13,7 +13,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any
 
-from kairos.images import redact_images
+from kairos.legacy_images import redact_images
 from kairos.sessions import SessionStore
 
 _HISTORY_TOOLS = {"search_history", "read_session"}

@@ -14,7 +14,7 @@ from kairos import application as application_module
 from kairos.application import ApplicationRequestError, ApplicationService
 from kairos.application_store import ApplicationStore
 from kairos.cancellation import CancellationToken, raise_if_cancelled
-from kairos.images import load_image
+from kairos.legacy_images import load_image
 from kairos.providers import OpenAICompatibleModel
 from kairos.runtime import DEFAULT_SYSTEM_PROMPT, create_runtime
 

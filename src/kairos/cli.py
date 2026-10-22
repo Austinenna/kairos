@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from .config import Settings
-from .images import redact_images
+from .legacy_images import redact_images
 from .runtime import AgentRuntime, create_runtime
 from .terminal_input import InputDraft, TerminalInput, TerminalInputUnsupportedError
 from .terminal_renderer import TerminalRenderer

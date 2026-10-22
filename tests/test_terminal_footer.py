@@ -13,7 +13,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
-from kairos.images import prepare_image
+from kairos.legacy_images import prepare_image
 from kairos.terminal_input import InputDraft, TerminalInput
 from kairos.terminal_renderer import TerminalRenderer
 from kairos.usage_stats import summarize_usage

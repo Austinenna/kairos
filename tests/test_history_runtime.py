@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from kairos.history_tools import HISTORY_TOOL_SCHEMAS
-from kairos.images import load_image
+from kairos.legacy_images import load_image
 from kairos.runtime import AgentRuntime, ToolRegistry, create_runtime
 from kairos.sessions import SessionStore
 from kairos_todo import initialize_database, list_todos

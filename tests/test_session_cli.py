@@ -8,8 +8,9 @@ import pytest
 from PIL import Image
 from rich.console import Console
 
-from kairos import cli, main
-from kairos.images import prepare_image
+from kairos import cli
+from kairos.legacy_images import prepare_image
+from kairos.program import legacy_main as main
 from kairos.runtime import create_runtime
 from kairos.terminal_input import InputDraft
 

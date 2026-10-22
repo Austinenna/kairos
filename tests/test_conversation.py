@@ -5,6 +5,7 @@ import pytest
 from kairos import conversation as conversation_module
 from kairos.config import Settings
 from kairos.conversation import Conversation
+from kairos.images import Image
 from kairos.models import ModelResponse, Usage
 from kairos.services import open_services
 
@@ -81,3 +82,15 @@ def test_empty_sessions_are_not_listed(services, new):
     used.respond("你好")
 
     assert [s.id for s in services.sessions.recent()] == [used.session.id]
+
+
+def test_images_are_sent_and_history_tools_see_only_text(services, new):
+    conversation, model = new(ModelResponse(content="是一只猫"))
+    image = Image(name="cat.png", mime_type="image/png", data="QUJD", width=1, height=1)
+
+    conversation.respond("这是什么", [image])
+
+    assert model.requests[0][-2]["content"][1] == image.to_block()  # 倒数第二条是用户消息，最后是时间
+    assert services.sessions.get(conversation.session.id).title == "这是什么 [图片：cat.png]"
+    page = services.tools.handlers["read_session"](conversation.session.id)
+    assert page["messages"][0]["content"] == "这是什么 [图片：cat.png]"  # 不含 base64
