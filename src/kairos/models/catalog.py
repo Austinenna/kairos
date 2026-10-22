@@ -17,7 +17,6 @@ Prices = tuple[float, float, float]
 class ModelInfo:
     context_window: int | None = None  # 最大上下文 token 数；None 表示未知
     thinking_toggle: bool = False  # 能否通过 extra_body.thinking 开关思考模式（DeepSeek）
-    json_mode: bool = False  # 是否支持 response_format={"type": "json_object"}
     off_peak_prices: Prices | None = None  # None 表示不知道价格，不估算费用
     peak_prices: Prices | None = None
 
@@ -27,14 +26,12 @@ MODELS: dict[str, ModelInfo] = {
     "deepseek-flash": ModelInfo(
         context_window=1_048_576,
         thinking_toggle=True,
-        json_mode=True,
         off_peak_prices=(0.003, 0.15, 0.60),
         peak_prices=(0.006, 0.30, 1.20),
     ),
     "deepseek-v4-pro": ModelInfo(
         context_window=1_000_000,
         thinking_toggle=True,
-        json_mode=True,
         off_peak_prices=(0.022, 0.66, 1.98),
         peak_prices=(0.044, 1.32, 3.96),
     ),

@@ -9,10 +9,10 @@ from .openai_compat import OpenAICompatibleModel
 __all__ = ["Model", "ModelResponse", "Usage", "build_model"]
 
 
-def build_model(settings: Settings, *, thinking: bool = False, json_mode: bool = False) -> Model:
+def build_model(settings: Settings, *, thinking: bool = False) -> Model:
     """根据配置创建模型适配器。
 
-    thinking 只对能力表里支持思考开关的模型生效；json_mode 同理。
+    thinking 只对能力表里支持思考开关的模型生效。
     """
     info = model_info(settings.kairos_model)
     if settings.kairos_provider == "anthropic":
@@ -27,7 +27,6 @@ def build_model(settings: Settings, *, thinking: bool = False, json_mode: bool =
         api_key=settings.kairos_api_key,
         base_url=settings.gateway_base_url,
         thinking=thinking if info.thinking_toggle else None,
-        json_mode=json_mode and info.json_mode,
     )
 
 

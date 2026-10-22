@@ -18,20 +18,14 @@ class OpenAICompatibleModel:
         api_key: str | None = None,
         base_url: str | None = None,
         thinking: bool | None = None,
-        json_mode: bool = False,
         client: OpenAI | None = None,
     ):
-        """创建适配器。
-
-        thinking 为 None 表示不发送思考开关（模型不支持时）；
-        json_mode 为 True 时要求模型只输出 JSON 对象，后台记忆提取会用到。
-        """
+        """创建适配器。thinking 为 None 表示不发送思考开关（模型不支持时）。"""
         self.model = model
         self.client = client or OpenAI(api_key=api_key, base_url=base_url, timeout=REQUEST_TIMEOUT)
         self.extra_body = {}
         if thinking is not None:
             self.extra_body["thinking"] = {"type": "enabled" if thinking else "disabled"}
-        self.json_mode = json_mode
 
     def stream(
         self, messages: list[dict], tools: list[dict], on_text: Callable[[str], None] | None = None
@@ -47,8 +41,6 @@ class OpenAICompatibleModel:
             request["tools"] = tools
         if self.extra_body:
             request["extra_body"] = self.extra_body
-        if self.json_mode:
-            request["response_format"] = {"type": "json_object"}
 
         text: list[str] = []
         reasoning: list[str] = []

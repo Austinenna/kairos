@@ -1,16 +1,14 @@
 """新版 Kairos 的临时纯文字入口，用来试用重构中的代码：uv run python -m kairos
 
-会话保存在 ~/.kairos/kairos.db（与旧版的 kairos.sqlite3 分开）。
+会话保存在 ~/.kairos/kairos.db，记忆在 ~/.kairos/memories/（都与旧版分开）。
 第 4 步会换成正式的终端界面；旧版 `uv run kairos` 在那之前照常可用。
 """
 
 import json
 
-from kairos_todo.tools import build_tools
-
 from .config import Settings, get_app_dir
 from .conversation import Conversation
-from .storage import SessionStore, open_db
+from .services import open_services
 
 HELP = "命令：/new 新会话  /sessions 列表  /resume ID 恢复  /rename 标题  /think 切换思考  /usage 用量  /exit 退出"
 
@@ -20,16 +18,19 @@ def show_tool_calls(message: dict) -> None:
         print(f"\n  [调用 {call['function']['name']} {call['function']['arguments']}]", flush=True)
 
 
+def show_notices(services) -> None:
+    for notice in services.extractor.drain_notices() if services.extractor else []:
+        print(f"  （{notice}）")
+
+
 def main() -> None:
-    settings = Settings()
-    db = open_db(get_app_dir() / "kairos.db")
-    store = SessionStore(db)
-    todo = build_tools(db)
-    tools = (todo["schemas"], todo["handlers"])
-    conversation = Conversation.create(store, settings, *tools)
+    services = open_services(Settings(), get_app_dir())
+    store = services.sessions
+    conversation = Conversation.create(services)
     print(f"Kairos（{conversation.session.model}）。{HELP}")
 
     while True:
+        show_notices(services)
         try:
             line = input("\n你> ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -40,7 +41,7 @@ def main() -> None:
         elif command == "/exit":
             break
         elif command == "/new":
-            conversation = Conversation.create(store, settings, *tools)
+            conversation = Conversation.create(services)
             print("已新建会话。")
         elif command == "/sessions":
             for session in store.recent():
@@ -48,7 +49,7 @@ def main() -> None:
                 print(f"{mark} {session.id[:8]}  {session.updated_at[:16]}  {session.title}")
         elif command == "/resume":
             try:
-                conversation = Conversation(store, store.get(argument), settings, *tools)
+                conversation = Conversation(services, store.get(argument))
             except ValueError as error:
                 print(error)
                 continue
@@ -73,6 +74,10 @@ def main() -> None:
             except KeyboardInterrupt:
                 print("\n[已中断]")
             print()
+
+    print("正在整理最后一轮的记忆……")
+    services.close()
+    show_notices(services)
 
 
 main()
