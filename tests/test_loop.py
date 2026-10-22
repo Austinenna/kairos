@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from kairos.agent import run_turn
 from kairos.models import ModelResponse
 
@@ -60,3 +62,19 @@ def test_tool_errors_are_returned_to_model():
 
     assert "ValueError: 坏了" in json.loads(messages[2]["content"])["error"]
     assert "没有名为 missing 的工具" in json.loads(messages[3]["content"])["error"]
+
+
+def test_interrupted_answer_keeps_shown_text():
+    class InterruptedModel:
+        def stream(self, messages, tools, on_text=None):
+            on_text("从前有座山")
+            raise KeyboardInterrupt
+
+    messages = [{"role": "user", "content": "讲个故事"}]
+    saved = []
+
+    with pytest.raises(KeyboardInterrupt):
+        run_turn(messages, InterruptedModel(), [], {}, on_message=lambda message, usage: saved.append(message))
+
+    assert messages[-1] == {"role": "assistant", "content": "从前有座山\n\n（回答被用户中断）"}
+    assert saved == [messages[-1]]

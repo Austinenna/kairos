@@ -8,6 +8,9 @@ from ..models import Model, Usage
 
 ToolHandler = Callable[..., object]
 
+# 回答被中断时附在已显示正文后面，下一轮模型能知道上次的回答没说完。
+INTERRUPTED_NOTE = "\n\n（回答被用户中断）"
+
 
 class TooManyRequests(RuntimeError):
     """一轮对话里请求模型的次数超过上限，通常是模型在反复调用工具。"""
@@ -45,7 +48,9 @@ def run_turn(
     行为说明:
         1. 工具按模型给出的顺序串行执行；出错时把错误作为工具结果交回模型，让它自己处理。
         2. 每条消息追加后立刻交给 on_message 保存，这样已经执行的工具不会因为后面出错而丢失记录。
-        3. 执行工具时被 Ctrl+C 中断，会给这批里没有结果的调用补一条说明。
+        3. 生成回答时被 Ctrl+C 中断，把已经显示的正文存为一条标注“被中断”的助手消息，
+           让历史和用户看到的一致；没收完的工具调用直接丢弃。
+        4. 执行工具时被 Ctrl+C 中断，会给这批里没有结果的调用补一条说明。
            协议要求每个工具调用都有对应结果，否则下一次请求会被拒绝。
     """
 
@@ -54,10 +59,22 @@ def run_turn(
         if on_message:
             on_message(message, usage)
 
+    shown: list[str] = []  # 当前这次请求已经显示出去的正文
+
+    def show(text: str) -> None:
+        shown.append(text)
+        if on_text:
+            on_text(text)
+
     usages: list[Usage] = []
     for _ in range(max_requests):
         request = prepare(messages) if prepare else messages
-        response = model.stream(request, tools, on_text)
+        shown.clear()
+        try:
+            response = model.stream(request, tools, show)
+        except KeyboardInterrupt:
+            append({"role": "assistant", "content": "".join(shown) + INTERRUPTED_NOTE})
+            raise
         if response.usage:
             usages.append(response.usage)
         append(response.to_message(), response.usage)
