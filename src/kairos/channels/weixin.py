@@ -300,13 +300,14 @@ class WeixinAdapter:
         参数:
             checkpoint: 上次持久化的游标与按对话保存的回复令牌。
         返回:
-            消息元组及新 checkpoint (ReceiveBatch)。超时返回空批次。
+            消息元组及新 checkpoint (ReceiveBatch)。超时返回未确认连接的空批次。
         异常:
             TransportError: 批次、游标或本人消息的标识与回复令牌无效。
         行为说明:
             1. 忽略他人、Bot、群组与尚在生成的片段。
             2. 完整纯文本保留正文，媒体或混合消息的 text 为 None。
             3. 不写磁盘，不修改传入状态，失败时不推进游标。
+            4. 超时不代表收到服务端响应，不能用来确认断线后的连接恢复。
         """
         state = self._checkpoint(checkpoint)
         try:
@@ -316,7 +317,7 @@ class WeixinAdapter:
                 timeout=35.0,
             )
         except WeixinTimeout:
-            return ReceiveBatch((), copy.deepcopy(checkpoint))
+            return ReceiveBatch((), copy.deepcopy(checkpoint), connection_confirmed=False)
         _check_business(result)
         messages = result.get("msgs", [])
         cursor = result.get("get_updates_buf")

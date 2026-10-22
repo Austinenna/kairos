@@ -18,10 +18,11 @@ class InboundMessage:
 
 @dataclass(frozen=True)
 class ReceiveBatch:
-    """把新消息与相应的适配器状态一起交给存储，保证原子保存。"""
+    """保存新消息及接收进度；connection_confirmed 区分实际响应与超时空批次。"""
 
     messages: tuple[InboundMessage, ...]
     checkpoint: dict
+    connection_confirmed: bool = True
 
 
 @dataclass(frozen=True)

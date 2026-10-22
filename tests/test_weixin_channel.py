@@ -231,6 +231,7 @@ def test_poll_timeout_preserves_checkpoint(credentials):
     adapter = weixin.WeixinAdapter(credentials, FakeClient(weixin.WeixinTimeout("等待超时")))
     batch = adapter.poll(checkpoint)
     assert not batch.messages
+    assert batch.connection_confirmed is False
     assert batch.checkpoint == checkpoint
     assert batch.checkpoint is not checkpoint
 

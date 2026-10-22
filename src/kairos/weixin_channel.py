@@ -172,6 +172,7 @@ class WeixinChannelRunner:
         行为说明:
             1. KeyboardInterrupt 及其取消子类只产生受控中断状态。
             2. 任一线程结束都会通知同伴停止；错误仅保留安全说明和类别。
+            3. 只报告首个终止错误，避免收发线程同时失败时重复提示停止。
         """
         try:
             run()
@@ -181,12 +182,14 @@ class WeixinChannelRunner:
             safe_error = (
                 error
                 if isinstance(error, TransportError)
-                else TransportError(f"微信通道停止：{type(error).__name__}；未输出原始错误内容")
+                else TransportError(f"{type(error).__name__}；未输出原始错误内容")
             )
             with self._error_lock:
-                if self.error is None:
-                    self.error = safe_error
-            self.report(str(safe_error))
+                if self.error is not None:
+                    return
+                self.error = safe_error
+                self.stop_event.set()
+                self.report(f"微信通道已停止：{safe_error}")
         finally:
             self.stop_event.set()
             self._receiver_ready.set()
@@ -205,6 +208,9 @@ class WeixinChannelRunner:
         行为说明:
             1. 存储与适配器均在当前线程创建；连接关闭也在当前线程。
             2. 已收到的批次即使此刻收到 stop，也先完整保存再退出。
+            3. 故障期间只报告首次安全错误原因；实际响应到达后再报告恢复。
+            4. 超时维持原有等待和失败计数规则，但不作为恢复连接的依据。
+            5. 停止后仍保存迟到批次，但不再报告恢复或重试。
         """
         adapter = self.adapter_factory()
         self._identity = (adapter.channel, adapter.account_id, adapter.owner_id)
@@ -212,6 +218,7 @@ class WeixinChannelRunner:
             store.seed_checkpoint(adapter.channel, adapter.account_id, self.initial_checkpoint)
             self._receiver_ready.set()
             failures = 0
+            reconnecting = False
             while not self.stop_event.is_set():
                 try:
                     batch = adapter.poll(store.checkpoint(adapter.channel, adapter.account_id) or {})
@@ -224,13 +231,23 @@ class WeixinChannelRunner:
                     )
                     store.accept_batch(adapter.channel, adapter.account_id, ReceiveBatch(messages, batch.checkpoint))
                     failures = 0
+                    if reconnecting and batch.connection_confirmed:
+                        with self._error_lock:
+                            if not self.stop_event.is_set():
+                                self.report("微信连接已恢复，继续接收消息。")
+                                reconnecting = False
                     if not messages:
                         self.stop_event.wait(0.2)
                 except TransportError as error:
-                    failures += 1
-                    if error.authentication or not error.retryable or failures >= 5:
-                        raise
-                    self.report("微信接收暂时不可用，正在等待重连；已保存输入不会重跑。")
+                    with self._error_lock:
+                        if self.stop_event.is_set():
+                            break
+                        failures += 1
+                        if error.authentication or not error.retryable or failures >= 5:
+                            raise
+                        if not reconnecting:
+                            self.report(f"微信接收暂时不可用：{error}；正在等待重连，已保存输入不会重跑。")
+                            reconnecting = True
                     self.stop_event.wait(min(2**failures, 30))
 
     def _process(self) -> None:
