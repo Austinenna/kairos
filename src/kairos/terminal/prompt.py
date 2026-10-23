@@ -11,9 +11,10 @@ import shlex
 import sys
 from pathlib import Path
 
-from prompt_toolkit import PromptSession
+from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.application import get_app
 from prompt_toolkit.filters import to_filter
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import VerticalAlign
@@ -22,6 +23,7 @@ from prompt_toolkit.styles import Style
 from ..clipboard import ClipboardError, read_clipboard
 from ..images import IMAGE_SUFFIXES, Image, load_image, prepare_image
 
+PROMPT_STYLE = "fg:ansicyan bold"
 HINT = "Enter 发送 · Alt+Enter 换行 · Ctrl+V 贴图 · Esc 中断回答 · 连按两次 Ctrl+C 退出"
 
 
@@ -36,6 +38,7 @@ class Prompt:
                 key_bindings=self._key_bindings(),
                 bottom_toolbar=self._toolbar,
                 reserve_space_for_menu=0,  # 没有补全菜单，不用预留空行
+                erase_when_done=True,  # 发送后擦掉整个输入框（横线、状态行），再由 _echo 留下一行输入内容
                 prompt_continuation=" " * 5,  # 多行输入时，后面几行和“你 › ”后的文字对齐
                 style=Style.from_dict({"bottom-toolbar": "noreverse #758089", "rule": "#758089"}),
             )
@@ -57,7 +60,14 @@ class Prompt:
             for path in paths:
                 self._attach(lambda path=path: load_image(path))
         images, self.images, self.notice = self.images, [], ""
+        self._echo(text, images)
         return text, images
+
+    def _echo(self, text: str, images: list[Image]) -> None:
+        """在终端历史里留下这次的输入：“你 › 内容”，加上附带的图片名。"""
+        lines = [("", "\n"), (PROMPT_STYLE, "你 › "), ("", text.replace("\n", "\n     "))]
+        lines += [("class:rule", f"\n     [图片 {n}] {image.name}") for n, image in enumerate(images, 1)]
+        print_formatted_text(FormattedText(lines), style=self.session.style)
 
     def _key_bindings(self) -> KeyBindings:
         bindings = KeyBindings()
@@ -107,8 +117,8 @@ class Prompt:
             self.notice = f"图片无法读取：{type(error).__name__}: {error}"
 
     def _message(self) -> list[tuple[str, str]]:
-        """输入框上方的横线和提示符。每次重绘时调用，横线跟着终端宽度变。"""
-        return [("class:rule", _rule() + "\n"), ("fg:ansicyan bold", "你 › ")]
+        """输入框上方的空行、横线和提示符。每次重绘时调用，横线跟着终端宽度变。"""
+        return [("class:rule", "\n" + _rule() + "\n"), (PROMPT_STYLE, "你 › ")]
 
     def _toolbar(self) -> str:
         lines = [_rule()]  # 输入框下方的横线，和上方的一起把输入框框起来
