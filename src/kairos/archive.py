@@ -16,7 +16,7 @@ from uuid import uuid4
 
 from PIL import Image as PILImage
 
-from .images import prepare_image
+from .images import Image, prepare_image
 from .models import Model
 from .tools.registry import tool_schema
 
@@ -69,6 +69,7 @@ class ImageArchive:
         self.root = root
         self.model_factory = model_factory
         self.db.executescript(SCHEMA)
+        self._pixels: dict[str, Image] = {}  # 路径 → 处理好的图片，每次请求都要用，不重复读文件和缩放
 
     def store(self, data: bytes, source: str) -> ArchivedImage:
         """把原图存进 inbox 并记一行。之后分类失败，图片也不会丢。"""
@@ -99,6 +100,21 @@ class ImageArchive:
                 (relative, category, filing["title"], filing["description"], image.id),
             )
         return ArchivedImage(image.id, relative, category, filing["title"], filing["description"])
+
+    def get(self, image_id: int) -> ArchivedImage | None:
+        row = self.db.execute(
+            "SELECT id, path, category, title, description FROM images WHERE id = ?", (image_id,)
+        ).fetchone()
+        return ArchivedImage(**row) if row else None
+
+    def pixels(self, image: ArchivedImage) -> Image | None:
+        """读取原图并处理成发给模型的版本。文件被移走或删除时返回 None。"""
+        path = self.root / image.path
+        if image.path not in self._pixels:
+            if not path.exists():
+                return None
+            self._pixels[image.path] = prepare_image(path.read_bytes(), path.name)
+        return self._pixels[image.path]
 
     def search(self, query: str = "", limit: int = 10) -> list[dict]:
         """按关键词搜索归档的图片，最新的在前。关键词用空格分开，需同时出现在分类、标题或描述里。"""

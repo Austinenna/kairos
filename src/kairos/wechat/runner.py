@@ -7,9 +7,13 @@
   cursor         收消息的游标，保证重启后不会把旧消息再回复一遍
   context_token  回复时要带的令牌，来自对方最近一条消息
   session_id     微信当前对应的会话
+
+图片配对：两句话之间收到的图片，带进后一句话，让模型能看到。
+最后一张图之后超过 PAIR_SECONDS 才说话，就当作只是存档，不带进对话。
 """
 
 import json
+import time
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Thread
@@ -21,6 +25,7 @@ from .api import Credentials, Incoming, WeixinClient, WeixinError
 HELP = "直接发文字就可以对话；发图片会自动存档并分类。\n/new 开始新会话\n/help 显示本帮助"
 REPLY_BYTES = 1800  # 单条微信消息的长度上限（UTF-8 字节），更长的回答拆成几条发
 RETRY_SECONDS = 10  # 网络出错后隔多久再试
+PAIR_SECONDS = 15 * 60  # 最后一张图之后多久之内说的话，才把这些图带进对话
 
 
 class WeixinRunner:
@@ -31,6 +36,8 @@ class WeixinRunner:
         self.state_path = data_dir / "state.json"
         self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {}
         self.conversation: Conversation | None = None
+        self.pending_images: list[int] = []  # 上一句话之后收到的图片编号，等下一句话带进对话
+        self.last_image_at = 0.0  # 最后一张图归档的时间（time.monotonic）
         self.notices: Queue[str] = Queue()  # 给终端显示的状态，例如断线、登录失效
         self.stopping = Event()
         self.thread = Thread(target=self._run, name="kairos-weixin", daemon=True)
@@ -88,7 +95,7 @@ class WeixinRunner:
             else:
                 replies = [self._archive(image_item) for image_item in message.images]
                 if message.text.strip():
-                    replies.append(self._answer(message.text.strip()))
+                    replies.append(self._answer(message.text.strip(), self._take_pending_images()))
         for reply in replies:
             self._reply(reply)
 
@@ -99,14 +106,22 @@ class WeixinRunner:
         except Exception as error:
             return f"图片下载失败：{type(error).__name__}。可以再发一次。"
         image = self.services.images.store(data, "weixin")
+        self.pending_images.append(image.id)  # 分类失败也能带进对话，模型能看原图
+        self.last_image_at = time.monotonic()
         try:
             image = self.services.images.classify(image)
         except Exception as error:
             return f"图片已存到 {image.path}，自动分类失败：{type(error).__name__}: {error}"
         return f"已存到 {image.path}\n{image.description}"
 
-    def _answer(self, text: str) -> str:
-        """回答一条文字消息；/new 和 /help 是命令。"""
+    def _take_pending_images(self) -> list[int]:
+        """取出要带进这句话的图片，并清空待配对列表。离最后一张图太久的不带。"""
+        fresh = time.monotonic() - self.last_image_at <= PAIR_SECONDS
+        image_ids, self.pending_images = self.pending_images, []
+        return image_ids if fresh else []
+
+    def _answer(self, text: str, image_ids: list[int]) -> str:
+        """回答一条文字消息，image_ids 是配给这句话的图片；/new 和 /help 是命令。"""
         if text == "/new":
             self.conversation = Conversation.create(self.services, channel="weixin")
             self._remember_session()
@@ -114,7 +129,7 @@ class WeixinRunner:
         if text == "/help":
             return HELP
         try:
-            return self._conversation().respond(text).content or "（没有生成回答）"
+            return self._conversation().respond(text, image_ids=image_ids).content or "（没有生成回答）"
         except Exception as error:
             return f"出错了：{type(error).__name__}。没有自动重试，可以稍后再发一次。"
 

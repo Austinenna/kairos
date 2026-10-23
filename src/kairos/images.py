@@ -3,6 +3,7 @@
 处理只做三件事：按 EXIF 校正方向、缩到最长边 2000 像素、编码成 base64。
 用户消息里的图片块格式：{"type": "image", "name", "mime_type", "data": base64}，
 各模型适配器再把它转换成自己协议的格式。
+微信发来的图片已经归档，历史里只存引用 {"type": "image_ref", "image_id"}，请求前再展开（见 archive.py）。
 """
 
 import base64
@@ -64,11 +65,18 @@ def _encode(image: PILImage.Image, image_format: str) -> bytes:
 
 
 def text_of(content: str | list[dict]) -> str:
-    """取出消息正文里的文字；图片换成“[图片：文件名]”，不带 base64。
+    """取出消息正文里的文字；图片换成“[图片：文件名]”或“[图片 #编号]”，不带 base64。
 
     用在会话标题、历史搜索、记忆提取等只需要文字的地方。
     """
     if isinstance(content, str):
         return content
-    parts = [block["text"] if block["type"] == "text" else f"[图片：{block['name']}]" for block in content]
-    return " ".join(parts)
+    return " ".join(_block_text(block) for block in content)
+
+
+def _block_text(block: dict) -> str:
+    if block["type"] == "text":
+        return block["text"]
+    if block["type"] == "image_ref":
+        return f"[图片 #{block['image_id']}]"
+    return f"[图片：{block['name']}]"

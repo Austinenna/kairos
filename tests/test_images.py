@@ -5,7 +5,7 @@ from PIL import Image as PILImage
 
 from kairos.images import prepare_image, text_of
 from kairos.models.anthropic import to_anthropic_messages
-from kairos.models.openai_compat import _to_openai
+from kairos.models.openai_compat import _to_openai, _to_openai_messages
 from kairos.terminal.prompt import image_paths
 
 
@@ -43,3 +43,22 @@ def test_dragged_paths_are_recognized_as_images(tmp_path):
     assert image_paths(f"'{picture}'") == [picture]  # 带引号
     assert image_paths(str(picture).replace(" ", "\\ ")) == [picture]  # 反斜杠转义空格
     assert image_paths(f"看看这个 {picture}") == []  # 夹杂普通文字时不当作路径
+
+
+def test_image_in_tool_result_is_converted_for_both_protocols():
+    image = prepare_image(png_bytes(10, 10), "a.png").to_block()
+    call = {"id": "c1", "type": "function", "function": {"name": "view_image", "arguments": "{}"}}
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "c1", "content": [{"type": "text", "text": "结果"}, image]},
+        {"role": "system", "content": "时间"},
+    ]
+
+    openai = _to_openai_messages(messages)
+    _, anthropic = to_anthropic_messages(messages)
+
+    # OpenAI：工具结果只留文字，图片放进紧跟其后的用户消息
+    assert [m["role"] for m in openai] == ["assistant", "tool", "user", "system"]
+    assert openai[1]["content"] == "结果" and openai[2]["content"][1]["type"] == "image_url"
+    # Anthropic：图片直接放在 tool_result 里
+    assert [block["type"] for block in anthropic[1]["content"][0]["content"]] == ["text", "image"]

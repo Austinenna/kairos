@@ -2,10 +2,10 @@
 
 from collections.abc import Callable
 from datetime import datetime
-from functools import partial
 
 from .agent import TurnResult, run_turn
 from .agent.context import build_request
+from .image_refs import expand_image_refs
 from .images import Image
 from .models import Usage, build_model
 from .models.catalog import estimate_cost, model_info
@@ -42,6 +42,7 @@ class Conversation:
         self,
         prompt: str,
         images: list[Image] | None = None,
+        image_ids: list[int] | None = None,
         on_text: Callable[[str], None] | None = None,
         on_message: Callable[[dict], None] | None = None,
     ) -> TurnResult:
@@ -50,8 +51,9 @@ class Conversation:
         1. 保存用户消息，运行 Agent 循环，循环中的每条新消息都即时保存。
         2. 正常结束后，把这一轮交给后台提取记忆。
 
-        images 是随这条消息一起发送的图片；on_text 接收正文片段；
-        on_message 在每条新消息保存后调用，界面可以用它显示工具调用。
+        images 是随这条消息一起发送的图片，原样存进历史（终端贴图）；
+        image_ids 是已经归档的图片编号，历史里只存引用，请求前再展开（微信发图）；
+        on_text 接收正文片段；on_message 在每条新消息保存后调用，界面可以用它显示工具调用。
         """
 
         def save_and_notify(message: dict, usage: Usage | None) -> None:
@@ -61,21 +63,22 @@ class Conversation:
 
         # 重新载入历史：同一个会话可能刚在另一个入口（终端或微信）里有了新消息。
         self.messages = self.services.sessions.load_messages(self.session.id)
-        content: str | list[dict] = prompt
-        if images:
-            # 有图片时 content 是内容块列表：先文字，再逐张图片。
-            content = [{"type": "text", "text": prompt or "请看这些图片。"}, *(image.to_block() for image in images)]
+        blocks = [image.to_block() for image in images or []]
+        blocks += [{"type": "image_ref", "image_id": image_id} for image_id in image_ids or []]
+        # 有图片时 content 是内容块列表：先文字，再逐张图片。
+        content = [{"type": "text", "text": prompt or "请看这些图片。"}, *blocks] if blocks else prompt
         user = {"role": "user", "content": content}
         self._save(user)
         self.messages.append(user)
         tools = self.services.tools
         # 时间和记忆在一轮开始时取一次，这一轮里多次请求模型都用同一份，前缀相同才能命中缓存。
-        prepare = partial(
-            build_request,
-            now=datetime.now().astimezone(),
-            rules="\n\n".join(tools.instructions),
-            memory=self.services.memory.snapshot(),
-        )
+        now, memory = datetime.now().astimezone(), self.services.memory.snapshot()
+        rules = "\n\n".join(tools.instructions)
+
+        def prepare(messages: list[dict]) -> list[dict]:
+            view = expand_image_refs(messages, self.services.images)
+            return build_request(view, now=now, rules=rules, memory=memory)
+
         result = run_turn(
             self.messages,
             self.model,

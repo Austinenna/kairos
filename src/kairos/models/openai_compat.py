@@ -33,7 +33,7 @@ class OpenAICompatibleModel:
         """发起一次流式请求：正文片段边收边交给 on_text，结束后返回完整结果。"""
         request = {
             "model": self.model,
-            "messages": [_to_openai(message) for message in messages],
+            "messages": _to_openai_messages(messages),
             "stream": True,
             "stream_options": {"include_usage": True},  # 让最后一帧带上用量
         }
@@ -86,17 +86,40 @@ class OpenAICompatibleModel:
         )
 
 
+def _to_openai_messages(messages: list[dict]) -> list[dict]:
+    """转换整段消息。OpenAI 的工具结果只能是文字，带图片的工具结果（view_image）要拆开：
+    文字留在工具结果里，图片放进紧跟在这批工具结果后面的一条用户消息。"""
+    converted: list[dict] = []
+    images: list[dict] = []  # 这批工具结果里拆出来的图片
+    for message in messages:
+        if message["role"] != "tool" and images:
+            converted.append(_viewed_images(images))
+            images = []
+        if message["role"] == "tool" and isinstance(message["content"], list):
+            text = "\n".join(block["text"] for block in message["content"] if block["type"] == "text")
+            converted.append({**message, "content": text})
+            images += [_image_url(block) for block in message["content"] if block["type"] == "image"]
+        else:
+            converted.append(_to_openai(message))
+    if images:
+        converted.append(_viewed_images(images))
+    return converted
+
+
+def _viewed_images(images: list[dict]) -> dict:
+    return {"role": "user", "content": [{"type": "text", "text": "view_image 取回的原图："}, *images]}
+
+
 def _to_openai(message: dict) -> dict:
     """用户消息里的图片块转成 OpenAI 的 image_url（data URL）；其他消息原样发送。"""
     if message["role"] != "user" or isinstance(message["content"], str):
         return message
-    content = [
-        {"type": "image_url", "image_url": {"url": f"data:{block['mime_type']};base64,{block['data']}"}}
-        if block["type"] == "image"
-        else block
-        for block in message["content"]
-    ]
+    content = [_image_url(block) if block["type"] == "image" else block for block in message["content"]]
     return {**message, "content": content}
+
+
+def _image_url(block: dict) -> dict:
+    return {"type": "image_url", "image_url": {"url": f"data:{block['mime_type']};base64,{block['data']}"}}
 
 
 def _usage(raw) -> Usage:

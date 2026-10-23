@@ -77,7 +77,9 @@ def to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
         if role == "system":
             system_parts.append(message["content"])
         elif role == "tool":
-            result = {"type": "tool_result", "tool_use_id": message["tool_call_id"], "content": message["content"]}
+            # 工具结果可以带图片（view_image），和用户消息里的图片一样转换。
+            content = _user_content(message["content"])
+            result = {"type": "tool_result", "tool_use_id": message["tool_call_id"], "content": content}
             # 同一批工具的结果必须放在同一条 user 消息里。
             if converted and converted[-1]["role"] == "user" and _is_tool_results(converted[-1]):
                 converted[-1]["content"].append(result)
@@ -104,7 +106,7 @@ def to_anthropic_messages(messages: list[dict]) -> tuple[str, list[dict]]:
 
 
 def _user_content(content: str | list[dict]) -> str | list[dict]:
-    """图片块转成 Anthropic 的 base64 image 块。"""
+    """图片块转成 Anthropic 的 base64 image 块。用户消息和工具结果都用它。"""
     if isinstance(content, str):
         return content
     return [

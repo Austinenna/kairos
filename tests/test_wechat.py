@@ -12,6 +12,7 @@ from kairos.config import Settings
 from kairos.models import ModelResponse
 from kairos.services import open_services
 from kairos.wechat import api
+from kairos.wechat import runner as runner_module
 from kairos.wechat.api import Credentials, Incoming, WeixinClient
 from kairos.wechat.runner import WeixinRunner, split_reply
 
@@ -98,3 +99,17 @@ def test_download_image_decrypts_cdn_data(monkeypatch):
 
     image_item = {"aeskey": key.hex(), "media": {"full_url": "https://cdn/download"}}
     assert WeixinClient(Credentials("t", "bot", "me")).download_image(image_item) == b"original image"
+
+
+def test_images_go_into_the_next_message_unless_too_old(runner, monkeypatch):
+    runner._handle(Incoming("", [{"aeskey": "k"}], "t1"))
+    runner._handle(Incoming("", [{"aeskey": "k"}], "t2"))
+    runner._handle(Incoming("这两张是什么", [], "t3"))
+    runner._handle(Incoming("", [{"aeskey": "k"}], "t4"))
+    runner.last_image_at -= runner_module.PAIR_SECONDS + 1  # 发完图过了很久才说话
+    runner._handle(Incoming("明天提醒我开会", [], "t5"))
+
+    users = [m for m in runner.conversation.messages if m["role"] == "user"]
+    assert [b["image_id"] for b in users[0]["content"] if b["type"] == "image_ref"] == [1, 2]
+    assert users[1]["content"] == "明天提醒我开会"
+    assert runner.pending_images == []
