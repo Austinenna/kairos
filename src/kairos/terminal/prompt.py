@@ -12,8 +12,11 @@ import sys
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import get_app
+from prompt_toolkit.filters import to_filter
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.layout import VerticalAlign
 from prompt_toolkit.styles import Style
 
 from ..clipboard import ClipboardError, read_clipboard
@@ -32,8 +35,14 @@ class Prompt:
             self.session = PromptSession(
                 key_bindings=self._key_bindings(),
                 bottom_toolbar=self._toolbar,
-                style=Style.from_dict({"bottom-toolbar": "noreverse #758089"}),
+                reserve_space_for_menu=0,  # 没有补全菜单，不用预留空行
+                prompt_continuation=" " * 5,  # 多行输入时，后面几行和“你 › ”后的文字对齐
+                style=Style.from_dict({"bottom-toolbar": "noreverse #758089", "rule": "#758089"}),
             )
+            # prompt_toolkit 会占满光标以下的所有行，输入区向下撑开，状态行被推到屏幕最底部。
+            # 改成输入区只占实际用到的行数、内容靠上排列，下方横线才能紧贴输入框。
+            self.session.layout.current_window.dont_extend_height = to_filter(True)
+            self.session.layout.container.align = VerticalAlign.TOP
 
     def read(self, status: str = "") -> tuple[str, list[Image]]:
         """读取一次输入，返回 (文字, 图片)。Ctrl+C 抛出 KeyboardInterrupt，Ctrl+D 抛出 EOFError。"""
@@ -41,7 +50,7 @@ class Prompt:
             return input().strip(), []
         self.status = status
         while True:
-            text = self.session.prompt([("fg:ansicyan bold", "你 › ")]).strip()
+            text = self.session.prompt(self._message).strip()
             paths = image_paths(text)
             if not paths:
                 break
@@ -97,13 +106,22 @@ class Prompt:
         except Exception as error:
             self.notice = f"图片无法读取：{type(error).__name__}: {error}"
 
+    def _message(self) -> list[tuple[str, str]]:
+        """输入框上方的横线和提示符。每次重绘时调用，横线跟着终端宽度变。"""
+        return [("class:rule", _rule() + "\n"), ("fg:ansicyan bold", "你 › ")]
+
     def _toolbar(self) -> str:
-        lines = [self.status] if self.status else []
+        lines = [_rule()]  # 输入框下方的横线，和上方的一起把输入框框起来
+        lines += [self.status] if self.status else []
         lines += [f"[图片 {n}] {image.name}  {image.width}×{image.height}" for n, image in enumerate(self.images, 1)]
         if self.images and not self.notice:
             lines.append("输入框为空时 Backspace 删除最后一张图片")
         lines.append(self.notice or HINT)
         return "\n".join(lines)
+
+
+def _rule() -> str:
+    return "─" * get_app().output.get_size().columns
 
 
 def image_paths(text: str) -> list[Path]:
