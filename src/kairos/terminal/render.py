@@ -10,13 +10,16 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.segment import Segment
 from rich.text import Text
+from rich.theme import Theme
 
 CODE_THEME = "default"  # Pygments 的浅色代码配色
+# Rich 默认把行内代码显示成黑底青字，在浅色终端里很刺眼。改成只变色、不加底色。
+THEME = Theme({"markdown.code": "bold blue"})
 
 
 class Renderer:
     def __init__(self, console: Console | None = None):
-        self.console = console or Console()
+        self.console = console or Console(theme=THEME)
         self.text = ""  # 当前这段回答已收到的正文
         self.live: Live | None = None
 

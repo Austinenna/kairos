@@ -229,13 +229,22 @@ def status_line(conversation: Conversation) -> str:
     window = model_info(conversation.session.model).context_window
     context = "上下文 —"
     if totals.last_input_tokens and window:
-        context = f"上下文 {totals.last_input_tokens:,}/{window:,}（{totals.last_input_tokens / window:.1%}）"
+        used = totals.last_input_tokens
+        context = f"上下文 {short(used)}/{short(window)} ({used / window:.1%})"
     thinking = " · 思考开" if conversation.session.thinking else ""
     return (
         f"{conversation.session.model}{thinking} · {context} · "
-        f"本会话 输入 {usage.input_tokens:,}（缓存 {usage.cached_input_tokens:,}） "
-        f"输出 {usage.output_tokens:,} · ${totals.cost_usd:.4f}"
+        f"输入 {short(usage.input_tokens)} 缓存 {short(usage.cached_input_tokens)} "
+        f"输出 {short(usage.output_tokens)} · ${totals.cost_usd:.4f}"
     )
+
+
+def short(n: int) -> str:
+    """把 token 数缩写，状态行才放得下一行：3666 → 3.7k，1048576 → 1M。"""
+    for unit, size in (("M", 1_000_000), ("k", 1_000)):
+        if n >= size:
+            return f"{n / size:.1f}".removesuffix(".0") + unit
+    return str(n)
 
 
 def show_notices(services: Services, renderer: Renderer, weixin: WeixinRunner | None = None) -> None:

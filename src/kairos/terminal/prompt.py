@@ -19,7 +19,7 @@ from prompt_toolkit.styles import Style
 from ..clipboard import ClipboardError, read_clipboard
 from ..images import IMAGE_SUFFIXES, Image, load_image, prepare_image
 
-HINT = "Enter 发送 · Alt+Enter 换行 · Ctrl+V 粘贴图片 · 生成中 Esc 中断 · 连按两次 Ctrl+C 退出"
+HINT = "Enter 发送 · Alt+Enter 换行 · Ctrl+V 贴图 · Esc 中断回答 · 连按两次 Ctrl+C 退出"
 
 
 class Prompt:
