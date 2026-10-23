@@ -1,8 +1,9 @@
-"""微信 iLink Bot 协议：扫码登录、长轮询收消息、发文字消息。只依赖标准库。
+"""微信 iLink Bot 协议：扫码登录、长轮询收消息、发文字消息、下载图片。
 
 一个 Bot 只和扫码登录的那个人（owner）私聊，其他人的消息一律忽略。
 收消息靠“游标”（get_updates_buf）：每次请求带上一次返回的游标，服务端只返回之后的新消息。
 回复必须带上对方最近一条消息里的 context_token。
+图片不在消息里，消息只给 CDN 下载地址和密钥；下载到的是 AES-128-ECB 加密的数据。
 """
 
 import base64
@@ -14,10 +15,14 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
 DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
 APP_HEADERS = {"iLink-App-Id": "bot", "iLink-App-ClientVersion": "132106"}
 BASE_INFO = {"channel_version": "2.4.10", "bot_agent": "Kairos/0.1"}
 POLL_SECONDS = 35  # 长轮询：服务端最多挂起这么久，没有新消息就返回空列表
+TEXT, IMAGE = 1, 2  # item_list 里每一项的 type
 
 
 class WeixinError(RuntimeError):
@@ -41,7 +46,8 @@ class Credentials:
 
 @dataclass
 class Incoming:
-    text: str | None  # 纯文字消息的正文；图片、语音等其他类型为 None
+    text: str | None  # 文字正文，只有图片时是空字符串；含有语音、文件等不支持的内容时为 None
+    images: list[dict]  # 图片的 image_item，用 WeixinClient.download_image 下载
     context_token: str  # 回复这条消息时要带上
 
 
@@ -67,9 +73,12 @@ class WeixinClient:
                 or any(item.get("is_completed") is False for item in items)
             ):
                 continue
-            texts = [item["text_item"]["text"] for item in items if item.get("type") == 1]
-            text = "\n".join(texts) if texts and len(texts) == len(items) else None
-            messages.append(Incoming(text, message["context_token"]))
+            texts = [item["text_item"]["text"] for item in items if item.get("type") == TEXT]
+            images = [item["image_item"] for item in items if item.get("type") == IMAGE]
+            if len(texts) + len(images) == len(items):
+                messages.append(Incoming("\n".join(texts), images, message["context_token"]))
+            else:
+                messages.append(Incoming(None, [], message["context_token"]))
         return messages, result.get("get_updates_buf") or cursor
 
     def send(self, text: str, context_token: str) -> None:
@@ -81,9 +90,18 @@ class WeixinClient:
             "message_type": 2,  # 2 表示 Bot 发出的消息
             "message_state": 2,  # 2 表示消息已完整
             "context_token": context_token,
-            "item_list": [{"type": 1, "text_item": {"text": text}}],
+            "item_list": [{"type": TEXT, "text_item": {"text": text}}],
         }
         self._request("/ilink/bot/sendmessage", {"msg": message, "base_info": BASE_INFO}, 15)
+
+    def download_image(self, image_item: dict) -> bytes:
+        """下载并解密一张图片，返回原图字节。密钥是 image_item["aeskey"]（32 位 hex）。"""
+        with urllib.request.urlopen(image_item["media"]["full_url"], timeout=30) as reply:
+            encrypted = reply.read()
+        decryptor = Cipher(algorithms.AES(bytes.fromhex(image_item["aeskey"])), modes.ECB()).decryptor()
+        padded = decryptor.update(encrypted) + decryptor.finalize()
+        unpadder = padding.PKCS7(128).unpadder()  # 去掉加密时补齐到 16 字节整数倍的填充
+        return unpadder.update(padded) + unpadder.finalize()
 
     def _request(self, endpoint: str, payload: dict, timeout: float) -> dict:
         return request(self.credentials.base_url, endpoint, payload, timeout, token=self.credentials.bot_token)

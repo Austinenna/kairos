@@ -1,4 +1,4 @@
-"""微信入口：后台线程里循环“收消息 → 交给会话 → 回复”。
+"""微信入口：后台线程里循环“收消息 → 图片归档、文字交给会话 → 回复”。
 
 微信和终端共用同一个 Services，各自持有自己的 Conversation。
 处理每条消息时持有 services.lock，和终端轮流使用数据库，不会同时写。
@@ -16,9 +16,9 @@ from threading import Event, Thread
 
 from ..conversation import Conversation
 from ..services import Services
-from .api import Credentials, WeixinClient, WeixinError
+from .api import Credentials, Incoming, WeixinClient, WeixinError
 
-HELP = "直接发文字就可以对话。\n/new 开始新会话\n/help 显示本帮助\n目前只支持文字消息。"
+HELP = "直接发文字就可以对话；发图片会自动存档并分类。\n/new 开始新会话\n/help 显示本帮助"
 REPLY_BYTES = 1800  # 单条微信消息的长度上限（UTF-8 字节），更长的回答拆成几条发
 RETRY_SECONDS = 10  # 网络出错后隔多久再试
 
@@ -57,7 +57,7 @@ class WeixinRunner:
                 messages, self.state["cursor"] = self.client.poll(self.state.get("cursor", ""))
                 self._save_state()
                 for message in messages:
-                    self._handle(message.text, message.context_token)
+                    self._handle(message)
                 if failing:
                     self.notices.put("微信连接已恢复。")
                     failing = False
@@ -75,31 +75,48 @@ class WeixinRunner:
         self.stopping.wait(RETRY_SECONDS)
         return True
 
-    def _handle(self, text: str | None, context_token: str) -> None:
-        """处理 owner 发来的一条消息，回复后结束。"""
-        self.state["context_token"] = context_token
+    def _handle(self, message: Incoming) -> None:
+        """处理 owner 发来的一条消息：图片逐张归档，文字交给会话，全部处理完再回复。"""
+        self.state["context_token"] = message.context_token
         self._save_state()
-        if text is None:
-            self._reply("目前只支持文字消息。")
+        if message.text is None:
+            self._reply("目前只支持文字和图片。")
             return
         with self.services.lock:
             if self.stopping.is_set():
-                self._reply("Kairos 正在关闭，这条消息没有处理，请稍后再发。")
-                return
-            conversation = self._conversation()
-            if text.strip() == "/new":
-                self.conversation = Conversation.create(self.services, channel="weixin")
-                self._remember_session()
-                self._reply("已开始新会话。")
-                return
-            if text.strip() == "/help":
-                self._reply(HELP)
-                return
-            try:
-                answer = conversation.respond(text).content
-            except Exception as error:
-                answer = f"出错了：{type(error).__name__}。没有自动重试，可以稍后再发一次。"
-        self._reply(answer or "（没有生成回答）")
+                replies = ["Kairos 正在关闭，这条消息没有处理，请稍后再发。"]
+            else:
+                replies = [self._archive(image_item) for image_item in message.images]
+                if message.text.strip():
+                    replies.append(self._answer(message.text.strip()))
+        for reply in replies:
+            self._reply(reply)
+
+    def _archive(self, image_item: dict) -> str:
+        """下载一张图片并归档，返回回执。"""
+        try:
+            data = self.client.download_image(image_item)
+        except Exception as error:
+            return f"图片下载失败：{type(error).__name__}。可以再发一次。"
+        image = self.services.images.store(data, "weixin")
+        try:
+            image = self.services.images.classify(image)
+        except Exception as error:
+            return f"图片已存到 {image.path}，自动分类失败：{type(error).__name__}: {error}"
+        return f"已存到 {image.path}\n{image.description}"
+
+    def _answer(self, text: str) -> str:
+        """回答一条文字消息；/new 和 /help 是命令。"""
+        if text == "/new":
+            self.conversation = Conversation.create(self.services, channel="weixin")
+            self._remember_session()
+            return "已开始新会话。"
+        if text == "/help":
+            return HELP
+        try:
+            return self._conversation().respond(text).content or "（没有生成回答）"
+        except Exception as error:
+            return f"出错了：{type(error).__name__}。没有自动重试，可以稍后再发一次。"
 
     def _conversation(self) -> Conversation:
         """取微信当前的会话：先用内存里的，再按 state.json 恢复，都没有就新建。"""

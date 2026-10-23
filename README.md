@@ -55,7 +55,7 @@ uv run kairos --channels terminal  # 只启动终端（或 --channels weixin 只
 uv run --with 'qrcode[pil]' python -m kairos.wechat   # 首次扫码登录
 ```
 
-登录后 `uv run kairos` 会同时启动微信入口。Bot 只回复扫码登录的本人，目前只支持文字；微信里可以发 `/new` 开始新会话、`/help` 查看帮助。终端和微信可以同时使用，两边共用会话、记忆和待办。
+登录后 `uv run kairos` 会同时启动微信入口。Bot 只回复扫码登录的本人，支持文字和图片。发来的图片会自动存档：模型看图后给出分类、标题和描述，原图存到 `~/.kairos/files/<分类>/`，并回复存放位置；微信里可以发 `/new` 开始新会话、`/help` 查看帮助。终端和微信可以同时使用，两边共用会话、记忆和待办。
 
 ### 记忆
 
@@ -103,6 +103,7 @@ uv run kairos ─▶ terminal/app.py ─▶ open_services()（services.py，全�
 | `terminal/` | 主循环和命令、输入框（图片）、Markdown 流式渲染 |
 | `wechat/` | iLink 协议、微信收发线程 |
 | `images.py`、`clipboard.py` | 图片处理、读取 macOS 剪贴板 |
+| `archive.py` | 图片归档：存原图、让模型分类、`images` 表 |
 
 模型调用链：`Kairos → 本地 AI 网关 → 模型服务`。网关只透传请求，协议适配、Agent 循环和工具执行都在 Kairos 里。默认模型是 DeepSeek（`deepseek-flash`），走 OpenAI 兼容协议；设置 `KAIROS_PROVIDER=anthropic` 改用 Anthropic Messages 协议。
 
@@ -113,8 +114,9 @@ uv run kairos ─▶ terminal/app.py ─▶ open_services()（services.py，全�
 | 路径 | 内容 |
 |---|---|
 | `.env` | 配置和 API Key |
-| `kairos.db` | 会话、消息、用量，以及待办 |
+| `kairos.db` | 会话、消息、用量、待办，以及归档图片的信息（`images` 表） |
 | `memories/` | 记忆 |
+| `files/` | 归档的图片，按分类分文件夹；分类失败的留在 `inbox/` |
 | `channels/weixin/` | 微信凭据 `account.json`、收发状态 `state.json` |
 
 ## 开发
