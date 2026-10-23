@@ -112,7 +112,8 @@ class WeixinRunner:
             image = self.services.images.classify(image)
         except Exception as error:
             return f"图片已存到 {image.path}，自动分类失败：{type(error).__name__}: {error}"
-        return f"已存到 {image.path}\n{image.description}"
+        # 回执只说标题和分类；路径和描述用来搜索，问“存哪了”时模型会用 search_images 查出来。
+        return f"已存档 #{image.id}：{image.title}\n分类：{image.category}"
 
     def _take_pending_images(self) -> list[int]:
         """取出要带进这句话的图片，并清空待配对列表。离最后一张图太久的不带。"""

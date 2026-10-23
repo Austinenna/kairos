@@ -84,7 +84,7 @@ def test_image_is_archived_and_receipt_sent(runner):
     runner._handle(Incoming("", [{"aeskey": "k"}], "token-1"))
 
     [(receipt, token)] = runner.sent
-    assert receipt.startswith("已存到 票据/") and receipt.endswith("-停车票.jpg\n停车 12 元")
+    assert receipt == "已存档 #1：停车票\n分类：票据"
     assert token == "token-1"
     assert runner.conversation is None  # 只发图片不进对话
 
