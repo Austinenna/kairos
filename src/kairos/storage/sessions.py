@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     model      TEXT NOT NULL,
     thinking   INTEGER NOT NULL DEFAULT 0, -- 思考模式开关
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    channel    TEXT NOT NULL DEFAULT 'terminal'  -- 在哪个入口创建：terminal / weixin
 );
 CREATE TABLE IF NOT EXISTS messages (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,  -- 也是消息顺序
@@ -47,6 +48,7 @@ class Session:
     thinking: bool
     created_at: str
     updated_at: str
+    channel: str
 
 
 @dataclass
@@ -64,14 +66,17 @@ class SessionStore:
         self.db = db
         self.db.executescript(SCHEMA)
 
-    def create(self, *, provider: str, model: str, system_prompt: str, thinking: bool = False) -> Session:
-        """新建会话，并把 system 提示词存为第一条消息。"""
+    def create(
+        self, *, provider: str, model: str, system_prompt: str, channel: str = "terminal", thinking: bool = False
+    ) -> Session:
+        """新建会话，并把 system 提示词存为第一条消息。channel 是创建它的入口：terminal 或 weixin。"""
         now = _now()
         session_id = uuid4().hex
         with self.db:
             self.db.execute(
-                "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (session_id, DEFAULT_TITLE, provider, model, thinking, now, now),
+                """INSERT INTO sessions (id, title, provider, model, thinking, created_at, updated_at, channel)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, DEFAULT_TITLE, provider, model, thinking, now, now, channel),
             )
         self.add_message(session_id, {"role": "system", "content": system_prompt})
         return self.get(session_id)

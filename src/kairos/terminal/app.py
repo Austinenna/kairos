@@ -20,6 +20,8 @@ from ..wechat.runner import WeixinRunner
 from .prompt import Prompt
 from .render import Renderer
 
+CHANNEL_NAMES = {"terminal": "终端", "weixin": "微信"}
+
 HELP = """命令：
   /new              新建会话
   /sessions         列出最近的会话
@@ -165,7 +167,8 @@ def run_command(
     elif command == "/sessions":
         for session in services.sessions.recent():
             mark = "*" if session.id == conversation.session.id else " "
-            renderer.info(f"{mark} {session.id[:8]}  {session.updated_at[:16]}  {session.title}")
+            channel = CHANNEL_NAMES.get(session.channel, session.channel)
+            renderer.info(f"{mark} {session.id[:8]}  {session.updated_at[:16]}  {channel}  {session.title}")
     elif command == "/resume":
         conversation = Conversation(services, services.sessions.get(argument))
         renderer.info(f"已恢复：{conversation.session.title}")

@@ -88,7 +88,7 @@ class WeixinRunner:
                 return
             conversation = self._conversation()
             if text.strip() == "/new":
-                self.conversation = Conversation.create(self.services)
+                self.conversation = Conversation.create(self.services, channel="weixin")
                 self._remember_session()
                 self._reply("已开始新会话。")
                 return
@@ -108,7 +108,7 @@ class WeixinRunner:
             if session_id:
                 self.conversation = Conversation(self.services, self.services.sessions.get(session_id))
             else:
-                self.conversation = Conversation.create(self.services)
+                self.conversation = Conversation.create(self.services, channel="weixin")
                 self._remember_session()
         return self.conversation
 

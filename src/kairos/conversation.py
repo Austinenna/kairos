@@ -25,11 +25,16 @@ class Conversation:
         self.model = self._build_model()
 
     @classmethod
-    def create(cls, services: Services, system_prompt: str = DEFAULT_SYSTEM_PROMPT) -> "Conversation":
-        """用当前配置的协议和模型新建一个会话。"""
+    def create(
+        cls, services: Services, channel: str = "terminal", system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    ) -> "Conversation":
+        """用当前配置的协议和模型新建一个会话。channel 是创建它的入口：terminal 或 weixin。"""
         settings = services.settings
         session = services.sessions.create(
-            provider=settings.kairos_provider, model=settings.kairos_model, system_prompt=system_prompt
+            provider=settings.kairos_provider,
+            model=settings.kairos_model,
+            system_prompt=system_prompt,
+            channel=channel,
         )
         return cls(services, session)
 

@@ -40,7 +40,8 @@ def test_message_is_answered_and_session_survives_restart(runner, tmp_path):
     assert runner.sent == [("收到：你好", "token-1"), ("已开始新会话。", "token-2"), ("收到：第二个会话", "token-3")]
     state = json.loads((tmp_path / "state.json").read_text())
     assert state["session_id"] == runner.conversation.session.id  # 重启后接着用 /new 之后的会话
-    assert runner.services.sessions.get(state["session_id"]).title == "第二个会话"
+    session = runner.services.sessions.get(state["session_id"])
+    assert (session.title, session.channel) == ("第二个会话", "weixin")
 
 
 def test_poll_keeps_only_complete_messages_from_owner(monkeypatch):
