@@ -55,7 +55,7 @@ uv run kairos --channels terminal  # 只启动终端（或 --channels weixin 只
 uv run --with 'qrcode[pil]' python -m kairos.wechat   # 首次扫码登录
 ```
 
-登录后 `uv run kairos` 会同时启动微信入口。Bot 只回复扫码登录的本人，支持文字和图片。发来的图片会自动存档：模型看图后给出分类、标题和描述，原图存到 `~/.kairos/files/<分类>/`，并回复存放位置；微信里可以发 `/new` 开始新会话、`/help` 查看帮助。终端和微信可以同时使用，两边共用会话、记忆和待办。
+登录后 `uv run kairos` 会同时启动微信入口。Bot 只回复扫码登录的本人，支持文字和图片。发来的图片会自动存档：模型看图后给出分类、标题和描述，原图存到 `~/.kairos/files/<分类>/`，并回复存放位置。之后在终端或微信里问“上次那张停车票存哪了”，模型会用 `search_images` 找出文件路径；微信里可以发 `/new` 开始新会话、`/help` 查看帮助。终端和微信可以同时使用，两边共用会话、记忆和待办。
 
 ### 记忆
 
@@ -99,7 +99,7 @@ uv run kairos ─▶ terminal/app.py ─▶ open_services()（services.py，全�
 | `services.py` | 共享依赖的组装；`lock` 让终端和微信轮流使用数据库 |
 | `storage/sessions.py` | 两张表：`sessions`、`messages`（完整消息 JSON + 用量和费用） |
 | `memory/` | 记忆文件读写、后台提取 |
-| `tools/` | 工具注册表、记忆工具、历史会话工具 |
+| `tools/` | 工具注册表、记忆工具、历史会话工具、图片搜索工具 |
 | `terminal/` | 主循环和命令、输入框（图片）、Markdown 流式渲染 |
 | `wechat/` | iLink 协议、微信收发线程 |
 | `images.py`、`clipboard.py` | 图片处理、读取 macOS 剪贴板 |

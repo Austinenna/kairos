@@ -19,6 +19,7 @@ from .models import build_model
 from .storage import SessionStore, open_db
 from .tools import Toolset, load_factories
 from .tools.history import history_tools
+from .tools.images import image_tools
 from .tools.memory import primary_memory_tools
 
 
@@ -48,6 +49,7 @@ def open_services(settings: Settings, data_dir: Path, *, auto_memory: bool = Tru
     tools = load_factories(settings.kairos_tool_factories, db)  # 业务工具，默认是待办
     tools.add(primary_memory_tools(memory))
     tools.add(history_tools(db))
-    extractor = MemoryExtractor(memory, lambda: build_model(settings)) if auto_memory else None
     images = ImageArchive(db, data_dir / "files", lambda: build_model(settings))
+    tools.add(image_tools(images))
+    extractor = MemoryExtractor(memory, lambda: build_model(settings)) if auto_memory else None
     return Services(settings, db, SessionStore(db), tools, memory, extractor, images)

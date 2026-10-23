@@ -7,6 +7,7 @@ from PIL import Image as PILImage
 from kairos.archive import ImageArchive
 from kairos.models import ModelResponse
 from kairos.storage import open_db
+from kairos.tools.images import image_tools
 
 
 def jpeg_bytes():
@@ -57,3 +58,15 @@ def test_image_stays_in_inbox_when_model_gives_no_filing(archive, tmp_path):
     with pytest.raises(ValueError):
         archive.classify(image)
     assert (tmp_path / "files" / image.path).exists() and image.path.startswith("inbox/")
+
+
+def test_search_matches_all_keywords_across_fields(archive, tmp_path):
+    parking = archive.classify(archive.store(jpeg_bytes(), "weixin"))  # 票据 / 停车/票 / 停车 12 元
+    archive.model.filing = {"category": "截图", "title": "报错", "description": "KeyError: 'aeskey'"}
+    archive.classify(archive.store(jpeg_bytes(), "weixin"))
+    search = image_tools(archive).handlers["search_images"]
+
+    [hit] = search("票据 12")  # 分类和描述里各命中一个
+
+    assert hit["id"] == parking.id and hit["path"] == str(tmp_path / "files" / parking.path)
+    assert [image["title"] for image in search()] == ["报错", "停车/票"]  # 不填关键词：最新的在前

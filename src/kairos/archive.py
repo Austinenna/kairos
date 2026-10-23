@@ -100,6 +100,17 @@ class ImageArchive:
             )
         return ArchivedImage(image.id, relative, category, filing["title"], filing["description"])
 
+    def search(self, query: str = "", limit: int = 10) -> list[dict]:
+        """按关键词搜索归档的图片，最新的在前。关键词用空格分开，需同时出现在分类、标题或描述里。"""
+        words = query.split()
+        searchable = "(IFNULL(category, '') || ' ' || IFNULL(title, '') || ' ' || IFNULL(description, ''))"
+        conditions = " AND ".join(f"{searchable} LIKE ?" for _ in words) or "1"
+        rows = self.db.execute(
+            f"SELECT * FROM images WHERE {conditions} ORDER BY id DESC LIMIT ?",
+            [*(f"%{word}%" for word in words), limit],
+        )
+        return [dict(row) | {"path": str(self.root / row["path"])} for row in rows]
+
     def categories(self) -> list[str]:
         rows = self.db.execute("SELECT DISTINCT category FROM images WHERE category IS NOT NULL ORDER BY category")
         return [row["category"] for row in rows]
