@@ -17,10 +17,12 @@ from ..images import Image, text_of
 from ..models.catalog import model_info
 from ..services import Services, open_services
 from ..wechat.runner import WeixinRunner
+from .interrupt import EscInterrupt
 from .prompt import Prompt
 from .render import Renderer
 
 CHANNEL_NAMES = {"terminal": "终端", "weixin": "微信"}
+EXIT_WINDOW = 2  # 两次 Ctrl+C 间隔不超过这么多秒就退出
 
 HELP = """命令：
   /new              新建会话
@@ -31,7 +33,8 @@ HELP = """命令：
   /history          查看当前会话的消息
   /file 路径        把一个文本文件的内容作为消息发送
   /help             显示本帮助
-  /exit             退出（Ctrl+D 也可以）"""
+  /exit             退出（Ctrl+D、连按两次 Ctrl+C 也可以）
+生成回答时按 Esc 中断。"""
 
 
 def main() -> None:
@@ -101,6 +104,7 @@ def open_conversation(services: Services, args: argparse.Namespace) -> Conversat
 
 def run(services: Services, renderer: Renderer, conversation: Conversation, weixin: WeixinRunner | None) -> None:
     prompt = Prompt()
+    ctrl_c = DoubleCtrlC()
     renderer.info(f"Kairos · {conversation.session.title} · 输入 /help 查看命令")
     while True:
         show_notices(services, renderer, weixin)
@@ -112,7 +116,10 @@ def run(services: Services, renderer: Renderer, conversation: Conversation, weix
                 services.lock.release()
         try:
             text, images = prompt.read(status=status)
-        except KeyboardInterrupt:  # 输入时按 Ctrl+C：清空这次输入，继续
+        except KeyboardInterrupt:  # 输入时按 Ctrl+C：清空这次输入；连按两次退出
+            if ctrl_c.pressed():
+                return
+            prompt.notice = "2 秒内再按一次 Ctrl+C 退出"
             continue
         except EOFError:  # Ctrl+D
             return
@@ -128,8 +135,26 @@ def run(services: Services, renderer: Renderer, conversation: Conversation, weix
                 except (ValueError, OSError) as error:  # 例如会话 ID 不存在、文件读不了
                     renderer.error(str(error))
         elif text or images:
-            with taking_turn(services, renderer):
-                send(conversation, renderer, text, images)
+            with taking_turn(services, renderer), EscInterrupt() as esc:
+                interrupted = send(conversation, renderer, text, images)
+            if interrupted and not esc.pressed:  # 生成中按的是 Ctrl+C：也算一次，紧接着再按一次就退出
+                if ctrl_c.pressed():
+                    return
+                prompt.notice = "2 秒内再按一次 Ctrl+C 退出"
+
+
+class DoubleCtrlC:
+    """记录 Ctrl+C：两次间隔不超过 EXIT_WINDOW 秒，就表示要退出。"""
+
+    def __init__(self):
+        self.last = 0.0
+
+    def pressed(self) -> bool:
+        """按了一次 Ctrl+C。返回 True 表示和上一次连在一起，应该退出。"""
+        now = time.monotonic()
+        twice = now - self.last < EXIT_WINDOW
+        self.last = now
+        return twice
 
 
 @contextmanager
@@ -144,17 +169,19 @@ def taking_turn(services: Services, renderer: Renderer) -> Iterator[None]:
         services.lock.release()
 
 
-def send(conversation: Conversation, renderer: Renderer, text: str, images: list[Image]) -> None:
-    """发送一条消息并显示回答。中断和出错都只结束这一轮，程序继续运行。"""
+def send(conversation: Conversation, renderer: Renderer, text: str, images: list[Image]) -> bool:
+    """发送一条消息并显示回答。中断和出错都只结束这一轮，程序继续运行。返回是否被中断。"""
     try:
         conversation.respond(text, images, on_text=renderer.text_delta, on_message=renderer.message)
         renderer.end_text()
     except KeyboardInterrupt:
         renderer.end_text()
         renderer.info("已中断。")
+        return True
     except Exception as error:  # 网络、接口等错误：显示出来，让用户决定下一步
         renderer.end_text()
         renderer.error(f"出错了：{type(error).__name__}: {error}")
+    return False
 
 
 def run_command(
