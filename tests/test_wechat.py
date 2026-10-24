@@ -1,5 +1,6 @@
 import json
 from io import BytesIO
+from threading import Event
 
 import pytest
 from cryptography.hazmat.primitives import padding
@@ -82,11 +83,28 @@ def test_long_reply_is_split_by_bytes():
 
 def test_image_is_archived_and_receipt_sent(runner):
     runner._handle(Incoming("", [{"aeskey": "k"}], "token-1"))
+    runner.services.classifier.close()  # 等后台分类做完
 
-    [(receipt, token)] = runner.sent
-    assert receipt == "已存档 #1：停车票\n分类：票据"
-    assert token == "token-1"
+    assert runner.sent == [("已存档 #1：停车票\n分类：票据", "token-1")]
+    assert runner.services.images.get(1).category == "票据"  # 后台用另一个连接写的，这边能读到
     assert runner.conversation is None  # 只发图片不进对话
+
+
+def test_reply_does_not_wait_for_classification(runner):
+    release = Event()
+    slow = FilingModel({"category": "票据", "title": "停车票", "description": "停车 12 元"})
+    slow_stream = slow.stream
+    slow.stream = lambda *args, **kwargs: (release.wait(5), slow_stream(*args, **kwargs))[1]
+    runner.services.classifier.model_factory = lambda: slow
+
+    runner._handle(Incoming("", [{"aeskey": "k"}], "t1"))
+    runner._handle(Incoming("这是什么", [], "t2"))  # 分类还卡着，对话照样回答，并带上这张图
+    [(answer, _)] = runner.sent  # 回执还没发，回答已经发了
+    assert "未分类 · 已存档" in answer and "'type': 'image'" in answer  # 模型看到了还在 inbox 里的原图
+    release.set()
+    runner.services.classifier.close()
+
+    assert [text for text, _ in runner.sent][1] == "已存档 #1：停车票\n分类：票据"
 
 
 def test_download_image_decrypts_cdn_data(monkeypatch):

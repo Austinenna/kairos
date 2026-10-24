@@ -18,6 +18,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Thread
 
+from ..archive import ArchivedImage
 from ..conversation import Conversation
 from ..services import Services
 from .api import Credentials, Incoming, WeixinClient, WeixinError
@@ -83,37 +84,50 @@ class WeixinRunner:
         return True
 
     def _handle(self, message: Incoming) -> None:
-        """处理 owner 发来的一条消息：图片逐张归档，文字交给会话，全部处理完再回复。"""
+        """处理 owner 发来的一条消息：图片存档后交给后台分类，文字交给会话，回复文字。
+
+        图片的回执由后台分类线程在分类完成后发出，不等它。
+        """
         self.state["context_token"] = message.context_token
         self._save_state()
         if message.text is None:
             self._reply("目前只支持文字和图片。")
             return
+        replies, downloads = [], []
+        for image_item in message.images:  # 下载不碰数据库，不用拿锁
+            try:
+                downloads.append(self.client.download_image(image_item))
+            except Exception as error:
+                replies.append(f"图片下载失败：{type(error).__name__}。可以再发一次。")
         with self.services.lock:
             if self.stopping.is_set():
                 replies = ["Kairos 正在关闭，这条消息没有处理，请稍后再发。"]
             else:
-                replies = [self._archive(image_item) for image_item in message.images]
+                for data in downloads:
+                    self._archive(data)
                 if message.text.strip():
                     replies.append(self._answer(message.text.strip(), self._take_pending_images()))
         for reply in replies:
             self._reply(reply)
 
-    def _archive(self, image_item: dict) -> str:
-        """下载一张图片并归档，返回回执。"""
-        try:
-            data = self.client.download_image(image_item)
-        except Exception as error:
-            return f"图片下载失败：{type(error).__name__}。可以再发一次。"
+    def _archive(self, data: bytes) -> None:
+        """把图片存进 inbox、加入待配对列表，再排队交给后台分类。"""
         image = self.services.images.store(data, "weixin")
-        self.pending_images.append(image.id)  # 分类失败也能带进对话，模型能看原图
+        self.pending_images.append(image.id)  # 不等分类：还在 inbox 里也能带进对话，模型能看原图
         self.last_image_at = time.monotonic()
+        self.services.classifier.submit(image.id, self._send_receipt)
+
+    def _send_receipt(self, result: ArchivedImage | Exception) -> None:
+        """后台分类完成后调用（在分类线程里）：给微信发回执。"""
+        if isinstance(result, Exception):
+            text = f"图片已存进 inbox，自动分类失败：{type(result).__name__}: {result}"
+        else:
+            # 回执只说标题和分类；路径和描述用来搜索，问“存哪了”时模型会用 search_images 查出来。
+            text = f"已存档 #{result.id}：{result.title}\n分类：{result.category}"
         try:
-            image = self.services.images.classify(image)
-        except Exception as error:
-            return f"图片已存到 {image.path}，自动分类失败：{type(error).__name__}: {error}"
-        # 回执只说标题和分类；路径和描述用来搜索，问“存哪了”时模型会用 search_images 查出来。
-        return f"已存档 #{image.id}：{image.title}\n分类：{image.category}"
+            self._reply(text)
+        except Exception as error:  # 后台线程里没人接异常，转给终端显示
+            self.notices.put(f"图片回执没有发出：{type(error).__name__}: {error}")
 
     def _take_pending_images(self) -> list[int]:
         """取出要带进这句话的图片，并清空待配对列表。离最后一张图太久的不带。"""
