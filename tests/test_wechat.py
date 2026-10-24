@@ -90,12 +90,13 @@ def test_image_is_archived_and_receipt_sent(runner):
     assert runner.conversation is None  # 只发图片不进对话
 
 
-def test_reply_does_not_wait_for_classification(runner):
+def test_reply_does_not_wait_for_classification(runner, monkeypatch):
     release = Event()
     slow = FilingModel({"category": "票据", "title": "停车票", "description": "停车 12 元"})
     slow_stream = slow.stream
     slow.stream = lambda *args, **kwargs: (release.wait(5), slow_stream(*args, **kwargs))[1]
-    runner.services.classifier.model_factory = lambda: slow
+    # 分类线程启动时就拿走了 model_factory，改它的属性有竞态；它每次调用都查 build_model，替换这个才稳定。
+    monkeypatch.setattr(services_module, "build_model", lambda *args, **kwargs: slow)
 
     runner._handle(Incoming("", [{"aeskey": "k"}], "t1"))
     runner._handle(Incoming("这是什么", [], "t2"))  # 分类还卡着，对话照样回答，并带上这张图
