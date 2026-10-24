@@ -22,5 +22,5 @@ data/
 
 # 本地参考资料与项目文档不纳入 Git
 /references/
-/docs/
-/CLAUDE.md
+/docs/*
+!/docs/函数注释模板.md
