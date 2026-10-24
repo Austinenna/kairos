@@ -123,7 +123,7 @@ class WeixinRunner:
             text = f"图片已存进 inbox，自动分类失败：{type(result).__name__}: {result}"
         else:
             # 回执只说标题和分类；路径和描述用来搜索，问“存哪了”时模型会用 search_images 查出来。
-            text = f"已存档 #{result.id}：{result.title}\n分类：{result.category}"
+            text = f"已存档 #{result.id}【{result.category}】《{result.title}》"
         try:
             self._reply(text)
         except Exception as error:  # 后台线程里没人接异常，转给终端显示

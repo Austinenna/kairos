@@ -85,7 +85,7 @@ def test_image_is_archived_and_receipt_sent(runner):
     runner._handle(Incoming("", [{"aeskey": "k"}], "token-1"))
     runner.services.classifier.close()  # 等后台分类做完
 
-    assert runner.sent == [("已存档 #1：停车票\n分类：票据", "token-1")]
+    assert runner.sent == [("已存档 #1【票据】《停车票》", "token-1")]
     assert runner.services.images.get(1).category == "票据"  # 后台用另一个连接写的，这边能读到
     assert runner.conversation is None  # 只发图片不进对话
 
@@ -104,7 +104,7 @@ def test_reply_does_not_wait_for_classification(runner):
     release.set()
     runner.services.classifier.close()
 
-    assert [text for text, _ in runner.sent][1] == "已存档 #1：停车票\n分类：票据"
+    assert [text for text, _ in runner.sent][1] == "已存档 #1【票据】《停车票》"
 
 
 def test_download_image_decrypts_cdn_data(monkeypatch):
