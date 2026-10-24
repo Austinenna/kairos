@@ -3,7 +3,7 @@
 import json
 import sqlite3
 
-from ..images import text_of
+from ..images.prepare import text_of
 from .registry import Toolset, tool_schema
 
 SEARCH_HISTORY = tool_schema(

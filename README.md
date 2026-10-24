@@ -102,9 +102,7 @@ uv run kairos ─▶ terminal/app.py ─▶ open_services()（services.py，全�
 | `tools/` | 工具注册表、记忆工具、历史会话工具、图片搜索工具 |
 | `terminal/` | 主循环和命令、输入框（图片）、Markdown 流式渲染、读取 macOS 剪贴板 |
 | `wechat/` | iLink 协议、微信收发线程 |
-| `images.py` | 图片处理 |
-| `archive.py` | 图片归档：存原图、`images` 表；`ImageClassifier` 在后台线程用自己的数据库连接让模型分类，不占用对话 |
-| `image_refs.py` | 请求前把历史里的图片引用展开：最近一批给原图，更早的给描述 |
+| `images/` | `prepare.py` 图片预处理；`archive.py` 存原图、`images` 表；`classifier.py` 后台线程用自己的数据库连接让模型分类，不占用对话；`refs.py` 请求前把历史里的图片引用展开：最近一批给原图，更早的给描述 |
 
 模型调用链：`Kairos → 本地 AI 网关 → 模型服务`。网关只透传请求，协议适配、Agent 循环和工具执行都在 Kairos 里。默认模型是 DeepSeek（`deepseek-flash`），走 OpenAI 兼容协议；设置 `KAIROS_PROVIDER=anthropic` 改用 Anthropic Messages 协议。
 

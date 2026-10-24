@@ -20,7 +20,7 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import VerticalAlign
 from prompt_toolkit.styles import Style
 
-from ..images import IMAGE_SUFFIXES, Image, load_image, prepare_image
+from ..images.prepare import IMAGE_SUFFIXES, Image, load_image, prepare_image
 from .clipboard import ClipboardError, read_clipboard
 
 PROMPT_STYLE = "fg:ansicyan bold"

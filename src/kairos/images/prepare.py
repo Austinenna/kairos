@@ -3,7 +3,7 @@
 处理只做三件事：按 EXIF 校正方向、缩到最长边 2000 像素、编码成 base64。
 用户消息里的图片块格式：{"type": "image", "name", "mime_type", "data": base64}，
 各模型适配器再把它转换成自己协议的格式。
-微信发来的图片已经归档，历史里只存引用 {"type": "image_ref", "image_id"}，请求前再展开（见 archive.py）。
+微信发来的图片已经归档，历史里只存引用 {"type": "image_ref", "image_id"}，请求前再展开（见 refs.py）。
 """
 
 import base64

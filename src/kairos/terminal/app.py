@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from ..config import Settings, get_app_dir
 from ..conversation import Conversation
-from ..images import Image, text_of
+from ..images.prepare import Image, text_of
 from ..models.catalog import model_info
 from ..services import Services, open_services
 from ..wechat.runner import WeixinRunner

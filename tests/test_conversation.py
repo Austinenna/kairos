@@ -5,7 +5,7 @@ import pytest
 from kairos import conversation as conversation_module
 from kairos.config import Settings
 from kairos.conversation import Conversation
-from kairos.images import Image
+from kairos.images.prepare import Image
 from kairos.models import ModelResponse, Usage
 from kairos.services import open_services
 

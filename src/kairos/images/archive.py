@@ -3,8 +3,7 @@
 目录结构：files/<分类>/<日期>-<标题>.<扩展名>，files 在 ~/.kairos 下。
 images 表记每张图的路径和归档信息，以数据库为准；描述里有图中的关键文字，以后靠它搜索。
 
-存进 inbox 很快，在收消息的线程里做；看图分类要请求模型，交给后台的 ImageClassifier，
-它用自己的数据库连接，不拿 services.lock，不耽误对话。
+存进 inbox 很快，在收消息的线程里做；看图分类要请求模型，交给后台的 ImageClassifier（classifier.py）。
 """
 
 import json
@@ -15,16 +14,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from queue import Queue
-from threading import Thread
 from uuid import uuid4
 
 from PIL import Image as PILImage
 
-from .images import Image, prepare_image
-from .models import Model
-from .storage import open_db
-from .tools.registry import tool_schema
+from ..models import Model
+from ..tools.registry import tool_schema
+from .prepare import Image, prepare_image
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS images (
@@ -157,39 +153,6 @@ class ImageArchive:
                 if all(isinstance(filing.get(key), str) for key in ("category", "title", "description")):
                     return filing
         raise ValueError("模型没有给出归档结果")
-
-
-class ImageClassifier:
-    """后台分类线程：排队给 inbox 里的图片分类，做完一张调用一次 on_done。"""
-
-    def __init__(self, db_path: Path, root: Path, model_factory: Callable[[], Model]):
-        self.db_path = db_path
-        self.root = root
-        self.model_factory = model_factory
-        self.jobs: Queue[tuple[int, Callable] | None] = Queue()
-        self.thread = Thread(target=self._run, name="kairos-classifier", daemon=True)
-        self.thread.start()
-
-    def submit(self, image_id: int, on_done: Callable[[ArchivedImage | Exception], None]) -> None:
-        """排队分类一张图。on_done 在后台线程里调用，参数是归档结果，失败时是异常。"""
-        self.jobs.put((image_id, on_done))
-
-    def close(self) -> None:
-        """等排队的分类全部做完再结束。没做完就退出的图片留在 inbox 里，不会丢。"""
-        self.jobs.put(None)
-        self.thread.join()
-
-    def _run(self) -> None:
-        # 自己的连接：和对话用的连接互不等待，SQLite 用文件锁协调两边的写入。
-        archive = ImageArchive(open_db(self.db_path), self.root, self.model_factory)
-        while (job := self.jobs.get()) is not None:
-            image_id, on_done = job
-            try:
-                result = archive.classify(archive.get(image_id))
-            except Exception as error:
-                result = error
-            on_done(result)
-        archive.db.close()
 
 
 def _extension(data: bytes) -> str:

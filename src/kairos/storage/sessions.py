@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import uuid4
 
-from ..images import text_of
+from ..images.prepare import text_of
 from ..models import Usage
 
 SCHEMA = """

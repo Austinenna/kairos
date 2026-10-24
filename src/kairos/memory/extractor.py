@@ -9,7 +9,7 @@ from queue import Empty, Queue
 from threading import Thread
 
 from ..agent import run_turn
-from ..images import text_of
+from ..images.prepare import text_of
 from ..models import Model
 from ..tools.memory import extraction_memory_tools
 from .store import MemoryStore

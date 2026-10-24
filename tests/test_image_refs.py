@@ -2,7 +2,7 @@ import json
 
 from test_archive import archive, jpeg_bytes  # noqa: F401  archive 是 fixture
 
-from kairos.image_refs import expand_image_refs
+from kairos.images.refs import expand_image_refs
 
 
 def view_call(call_id, image_id):

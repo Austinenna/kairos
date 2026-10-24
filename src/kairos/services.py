@@ -11,8 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
 
-from .archive import ImageArchive, ImageClassifier
 from .config import Settings
+from .images.archive import ImageArchive
+from .images.classifier import ImageClassifier
 from .memory.extractor import MemoryExtractor
 from .memory.store import MemoryStore
 from .models import build_model

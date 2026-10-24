@@ -1,7 +1,7 @@
 """图片归档工具：搜索已经存档的图片，或取回一张旧图的原图来看。只读。"""
 
-from ..archive import ImageArchive
-from ..image_refs import VIEW_IMAGE
+from ..images.archive import ImageArchive
+from ..images.refs import VIEW_IMAGE
 from .registry import Toolset, tool_schema
 
 SEARCH_IMAGES = tool_schema(

@@ -3,7 +3,7 @@ from io import BytesIO
 
 from PIL import Image as PILImage
 
-from kairos.images import prepare_image, text_of
+from kairos.images.prepare import prepare_image, text_of
 from kairos.models.anthropic import to_anthropic_messages
 from kairos.models.openai_compat import _to_openai, _to_openai_messages
 from kairos.terminal.prompt import image_paths

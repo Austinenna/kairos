@@ -18,8 +18,8 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Thread
 
-from ..archive import ArchivedImage
 from ..conversation import Conversation
+from ..images.archive import ArchivedImage
 from ..services import Services
 from .api import Credentials, Incoming, WeixinClient, WeixinError
 

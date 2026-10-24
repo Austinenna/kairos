@@ -4,7 +4,7 @@ from io import BytesIO
 import pytest
 from PIL import Image as PILImage
 
-from kairos.archive import ImageArchive
+from kairos.images.archive import ImageArchive
 from kairos.models import ModelResponse
 from kairos.storage import open_db
 from kairos.tools.images import image_tools

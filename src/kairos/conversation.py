@@ -5,8 +5,8 @@ from datetime import datetime
 
 from .agent import TurnResult, run_turn
 from .agent.context import build_request
-from .image_refs import expand_image_refs
-from .images import Image
+from .images.prepare import Image
+from .images.refs import expand_image_refs
 from .models import Usage, build_model
 from .models.catalog import estimate_cost, model_info
 from .services import Services
