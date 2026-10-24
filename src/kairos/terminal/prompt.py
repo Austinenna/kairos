@@ -20,8 +20,8 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import VerticalAlign
 from prompt_toolkit.styles import Style
 
-from ..clipboard import ClipboardError, read_clipboard
 from ..images import IMAGE_SUFFIXES, Image, load_image, prepare_image
+from .clipboard import ClipboardError, read_clipboard
 
 PROMPT_STYLE = "fg:ansicyan bold"
 HINT = "Enter 发送 · Alt+Enter 换行 · Ctrl+V 贴图 · Esc 中断回答 · 连按两次 Ctrl+C 退出"
