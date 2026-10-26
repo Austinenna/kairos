@@ -51,6 +51,14 @@ def test_image_is_filed_into_category_without_overwriting(archive, tmp_path):
     assert "已有分类：票据" in archive.model.requests[1][0]["content"]  # 第二次归档时带上已有分类
 
 
+def test_classify_sends_user_memory_to_model(archive):
+    memory = "# 核心记忆\n\n- 代码截图归到「代码笔记」分类。"
+
+    archive.classify(archive.store(jpeg_bytes(), "weixin"), memory)
+
+    assert {"role": "system", "content": memory} in archive.model.requests[0]
+
+
 def test_image_stays_in_inbox_when_model_gives_no_filing(archive, tmp_path):
     archive.model.stream = lambda messages, tools, on_text=None: ModelResponse(content="这是一张图")
     image = archive.store(jpeg_bytes(), "weixin")

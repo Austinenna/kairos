@@ -38,7 +38,8 @@ ARCHIVE_PROMPT = """你是 Kairos 的图片归档员。用户发来一张图片�
 看图后调用一次 file_image：
 - category：分类名，2～6 个字。优先使用已有分类，确实都不合适才新建。
 - title：标题，简短说明这是什么，例如“停车票”“午饭发票 38 元”。
-- description：一两句描述。把图里的关键文字和数字写进去（金额、日期、名称、报错信息等），以后靠它搜索。"""
+- description：一两句描述。把图里的关键文字和数字写进去（金额、日期、名称、报错信息等），以后靠它搜索。
+附带的用户记忆里如果有相关要求（例如某类图片归到哪个分类），优先遵守。"""
 
 FILE_IMAGE = tool_schema(
     "file_image",
@@ -87,13 +88,15 @@ class ImageArchive:
             )
         return ArchivedImage(cursor.lastrowid, relative, None, None, None)
 
-    def classify(self, image: ArchivedImage) -> ArchivedImage:
+    def classify(self, image: ArchivedImage, memory: str = "") -> ArchivedImage:
         """让模型看图给出分类、标题和描述，把图片从 inbox 移到分类目录。
+
+        memory 是用户记忆快照，让分类遵守用户说过的长期要求。
 
         对话可能正在另一个线程里读这张图。先在新位置建硬链接、更新数据库，再删掉 inbox 里的，
         这样任何时候数据库记的路径上都有文件。
         """
-        filing = self._ask_model(self.root / image.path)
+        filing = self._ask_model(self.root / image.path, memory)
         category, title = _safe_name(filing["category"]), _safe_name(filing["title"])
         source = self.root / image.path
         target = _free_path(self.root / category / f"{datetime.now():%Y-%m-%d}-{title}{source.suffix}")
@@ -138,12 +141,13 @@ class ImageArchive:
         rows = self.db.execute("SELECT DISTINCT category FROM images WHERE category IS NOT NULL ORDER BY category")
         return [row["category"] for row in rows]
 
-    def _ask_model(self, path: Path) -> dict:
+    def _ask_model(self, path: Path, memory: str) -> dict:
         """请求一次模型，取出 file_image 的参数。模型没有调用工具时抛出 ValueError。"""
         existing = "、".join(self.categories()) or "（还没有）"
         image = prepare_image(path.read_bytes(), path.name)  # 发给模型的是缩小后的版本，原图不动
         messages = [
             {"role": "system", "content": f"{ARCHIVE_PROMPT}\n\n已有分类：{existing}"},
+            *([{"role": "system", "content": memory}] if memory else []),
             {"role": "user", "content": [{"type": "text", "text": "请归档这张图片。"}, image.to_block()]},
         ]
         response = self.model_factory().stream(messages, [FILE_IMAGE])

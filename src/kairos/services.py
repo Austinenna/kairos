@@ -54,7 +54,8 @@ def open_services(settings: Settings, data_dir: Path, *, auto_memory: bool = Tru
     tools.add(primary_memory_tools(memory))
     tools.add(history_tools(db))
     images = ImageArchive(db, data_dir / "files", lambda: build_model(settings))
-    classifier = ImageClassifier(db_path, data_dir / "files", lambda: build_model(settings))
+    # 后台任务和主对话带同一份记忆，用户说过的要求在哪里都生效。
+    classifier = ImageClassifier(db_path, data_dir / "files", lambda: build_model(settings), memory.snapshot)
     tools.add(image_tools(images))
     extractor = MemoryExtractor(memory, lambda: build_model(settings)) if auto_memory else None
     return Services(settings, db, SessionStore(db), tools, memory, extractor, images, classifier)
