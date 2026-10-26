@@ -91,7 +91,7 @@ class ImageArchive:
     def classify(self, image: ArchivedImage, memory: str = "") -> ArchivedImage:
         """让模型看图给出分类、标题和描述，把图片从 inbox 移到分类目录。
 
-        memory 是用户记忆快照，让分类遵守用户说过的长期要求。
+        memory 是核心记忆，让分类遵守用户的长期指令。
 
         对话可能正在另一个线程里读这张图。先在新位置建硬链接、更新数据库，再删掉 inbox 里的，
         这样任何时候数据库记的路径上都有文件。

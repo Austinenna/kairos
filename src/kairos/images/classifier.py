@@ -18,7 +18,7 @@ class ImageClassifier:
     """后台分类线程：排队给 inbox 里的图片分类，做完一张调用一次 on_done。"""
 
     def __init__(self, db_path: Path, root: Path, model_factory: Callable[[], Model], memory: Callable[[], str]):
-        """memory 返回用户记忆快照，每张图分类前取一次，用户刚说的要求也能用上。"""
+        """memory 返回核心记忆，每张图分类前取一次，用户刚说的要求也能用上。"""
         self.db_path = db_path
         self.root = root
         self.model_factory = model_factory
