@@ -19,7 +19,7 @@ REMEMBER = tool_schema(
 
 WRITE_CORE = tool_schema(
     "write_core",
-    "把用户本人的称呼、通用交流偏好或通用协作约定追加到核心记忆。",
+    "把用户本人的称呼，或用户要求以后持续遵守的长期指令，追加到核心记忆。",
     {"content": {"type": "string", "description": "一句话，CORE 里还没有的内容"}},
 )
 
