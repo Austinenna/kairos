@@ -99,7 +99,7 @@ uv run kairos ─▶ terminal/app.py ─▶ open_services()（services.py，全�
 | `services.py` | 共享依赖的组装；`lock` 让终端和微信轮流使用数据库 |
 | `storage/sessions.py` | 两张表：`sessions`、`messages`（完整消息 JSON + 用量和费用） |
 | `memory/` | 记忆文件读写、后台提取 |
-| `tools/` | 工具注册表、记忆工具、历史会话工具、图片搜索工具 |
+| `tools/` | 工具注册表、记忆工具、历史会话工具、图片搜索工具、定时任务工具 |
 | `terminal/` | 主循环和命令、输入框（图片）、Markdown 流式渲染、读取 macOS 剪贴板 |
 | `wechat/` | iLink 协议、微信收发线程 |
 | `images/` | `prepare.py` 图片预处理；`archive.py` 存原图、`images` 表；`classifier.py` 后台线程用自己的数据库连接让模型分类，不占用对话；`refs.py` 请求前把历史里的图片引用展开：最近一批给原图，更早的给描述 |

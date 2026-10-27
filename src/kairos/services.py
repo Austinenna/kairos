@@ -17,11 +17,13 @@ from .images.classifier import ImageClassifier
 from .memory.extractor import MemoryExtractor
 from .memory.store import MemoryStore
 from .models import build_model
+from .schedule.store import ScheduleStore
 from .storage import SessionStore, open_db
 from .tools import Toolset, load_factories
 from .tools.history import history_tools
 from .tools.images import image_tools
 from .tools.memory import primary_memory_tools
+from .tools.schedules import schedule_tools
 
 
 @dataclass
@@ -53,6 +55,7 @@ def open_services(settings: Settings, data_dir: Path, *, auto_memory: bool = Tru
     tools = load_factories(settings.kairos_tool_factories, db)  # 业务工具，默认是待办
     tools.add(primary_memory_tools(memory))
     tools.add(history_tools(db))
+    tools.add(schedule_tools(ScheduleStore(db)))
     images = ImageArchive(db, data_dir / "files", lambda: build_model(settings))
     # 后台任务带上核心记忆，用户的长期指令在哪里都生效。没有 read_memory，所以不给主题索引。
     classifier = ImageClassifier(db_path, data_dir / "files", lambda: build_model(settings), memory.core)
