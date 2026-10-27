@@ -8,6 +8,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from queue import Queue
 
 from pydantic import ValidationError
 
@@ -15,13 +16,15 @@ from ..config import Settings, get_app_dir
 from ..conversation import Conversation
 from ..images.prepare import Image, text_of
 from ..models.catalog import model_info
+from ..schedule.runner import ScheduleRunner
 from ..services import Services, open_services
+from ..tools import Toolset
 from ..wechat.runner import WeixinRunner
 from .interrupt import EscInterrupt
 from .prompt import Prompt
 from .render import Renderer
 
-CHANNEL_NAMES = {"terminal": "终端", "weixin": "微信"}
+CHANNEL_NAMES = {"terminal": "终端", "weixin": "微信", "schedule": "定时"}
 EXIT_WINDOW = 2  # 两次 Ctrl+C 间隔不超过这么多秒就退出
 
 HELP = """命令：
@@ -53,18 +56,21 @@ def main() -> None:
     services = open_services(settings, get_app_dir())
     renderer = Renderer()
     weixin = start_weixin(services, renderer) if "weixin" in channels else None
+    scheduler = build_scheduler(services)
     try:
         if "terminal" in channels:
-            run(services, renderer, open_conversation(services, args), weixin)
+            run(services, renderer, open_conversation(services, args), weixin, scheduler)
         elif weixin:
-            wait_for_weixin(services, renderer, weixin)
+            scheduler.start()
+            wait_for_weixin(services, renderer, weixin, scheduler)
     finally:
+        scheduler.stop()
         if weixin:
             weixin.stop()
         renderer.info("正在整理最后一轮的记忆……")
         with services.lock:  # 等微信正在处理的那条消息结束
             services.close()
-        show_notices(services, renderer, weixin)
+        show_notices(services, renderer, weixin, scheduler)
 
 
 def start_weixin(services: Services, renderer: Renderer) -> WeixinRunner | None:
@@ -79,16 +85,28 @@ def start_weixin(services: Services, renderer: Renderer) -> WeixinRunner | None:
         renderer.error(f"微信入口没有启动：{type(error).__name__}: {error}")
         return None
     weixin.start()
+    services.outlets["weixin"] = weixin.push
     renderer.info("微信入口已启动。")
     return weixin
 
 
-def wait_for_weixin(services: Services, renderer: Renderer, weixin: WeixinRunner) -> None:
+def build_scheduler(services: Services) -> ScheduleRunner:
+    """创建定时任务线程（还没启动）。prompt 任务每次在一个新会话里执行，来源记为 schedule，不做记忆提取。"""
+
+    def run_prompt(title: str, prompt: str, tools: Toolset) -> str:
+        conversation = Conversation.create(services, channel="schedule")
+        conversation.rename(title)
+        return conversation.respond(prompt, extra_tools=tools, extract_memory=False).content
+
+    return ScheduleRunner(services.schedules, services.lock, run_prompt, services.outlets)
+
+
+def wait_for_weixin(services: Services, renderer: Renderer, weixin: WeixinRunner, scheduler: ScheduleRunner) -> None:
     """只启动微信时，主线程在这里显示状态，按 Ctrl+C 退出。"""
     renderer.info("Kairos 正在运行微信入口，按 Ctrl+C 退出。")
     try:
         while weixin.thread.is_alive():
-            show_notices(services, renderer, weixin)
+            show_notices(services, renderer, weixin, scheduler)
             time.sleep(0.5)
     except KeyboardInterrupt:
         pass
@@ -102,12 +120,29 @@ def open_conversation(services: Services, args: argparse.Namespace) -> Conversat
     return Conversation.create(services)
 
 
-def run(services: Services, renderer: Renderer, conversation: Conversation, weixin: WeixinRunner | None) -> None:
+def run(
+    services: Services,
+    renderer: Renderer,
+    conversation: Conversation,
+    weixin: WeixinRunner | None,
+    scheduler: ScheduleRunner,
+) -> None:
     prompt = Prompt()
     ctrl_c = DoubleCtrlC()
+    pushed: Queue[str] = Queue()  # 定时推送到终端的内容，下次显示输入框前打印
+
+    def push(text: str) -> None:
+        """终端的推送函数，在调度线程里调用。conversation 取的是此刻的当前会话（/new 之后就是新会话）。"""
+        conversation.append_assistant(text)
+        pushed.put(text)
+
+    services.outlets["terminal"] = push
+    scheduler.start()  # 终端推送函数登记好再启动，启动时补跑的任务才找得到终端
     renderer.info(f"Kairos · {conversation.session.title} · 输入 /help 查看命令")
     while True:
-        show_notices(services, renderer, weixin)
+        show_notices(services, renderer, weixin, scheduler)
+        while not pushed.empty():
+            renderer.info(pushed.get())
         status = "微信那边正在回复……"
         if services.lock.acquire(blocking=False):  # 微信正在用数据库时不等它，状态行先显示提示
             try:
@@ -247,9 +282,12 @@ def short(n: int) -> str:
     return str(n)
 
 
-def show_notices(services: Services, renderer: Renderer, weixin: WeixinRunner | None = None) -> None:
-    """显示后台记忆提取和微信入口的状态。"""
+def show_notices(
+    services: Services, renderer: Renderer, weixin: WeixinRunner | None = None, scheduler: ScheduleRunner | None = None
+) -> None:
+    """显示后台记忆提取、微信入口和定时任务的状态。"""
     notices = services.extractor.drain_notices() if services.extractor else []
     notices += weixin.drain_notices() if weixin else []
+    notices += scheduler.drain_notices() if scheduler else []
     for notice in notices:
         renderer.info(f"（{notice}）")

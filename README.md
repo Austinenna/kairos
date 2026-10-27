@@ -66,6 +66,16 @@ uv run --with 'qrcode[pil]' python -m kairos.wechat   # 首次扫码登录
 
 每轮对话结束后，后台会把最近 3 轮对话交给模型判断有没有值得记住的内容，写入后在下一次输入前提示。
 
+### 定时推送
+
+直接说“明天下午三点提醒我交房租”“每天早上 8 点给我发早报，列出今天的待办”“每晚 9 点，有过期待办才提醒我”，模型会建成定时任务，到点推送到微信（也可以要求只在终端显示）。“我有哪些定时任务”“早报改成 7:30”“停掉早报”同样直接说。
+
+- 任务分两种：内容固定的到点直接发原文；需要到点查数据的，到点在一个新会话里让模型执行一次（`/sessions` 里标为“定时”），条件不满足时不推送。
+- 任务执行时看不到聊天记录，建任务时对话里用到的内容会原样写进任务。
+- 推送后会追加进该入口的当前会话，可以直接接着回复。
+- 程序关着时到点的任务，下次启动时补一次，并说明迟到了；过时没意义的由模型判断不发。
+- 只在 Kairos 运行时才会推送。设计见 `docs/定时推送设计.md`（本地文档）。
+
 ### 待办和历史
 
 - 待办：直接说“明天下午三点提醒我交房租”“列出待办”“删除买牛奶那条”。待办模块在 `src/kairos_todo/`，只依赖标准库，可以通过 `KAIROS_TOOL_FACTORIES` 关掉。
@@ -103,7 +113,7 @@ uv run kairos ─▶ terminal/app.py ─▶ open_services()（services.py，全�
 | `terminal/` | 主循环和命令、输入框（图片）、Markdown 流式渲染、读取 macOS 剪贴板 |
 | `wechat/` | iLink 协议、微信收发线程 |
 | `images/` | `prepare.py` 图片预处理；`archive.py` 存原图、`images` 表；`classifier.py` 后台线程用自己的数据库连接让模型分类，不占用对话；`refs.py` 请求前把历史里的图片引用展开：最近一批给原图，更早的给描述 |
-| `schedule/` | 定时推送：`store.py` 存任务（`schedules` 表）、算下次触发时间（cron 用 croniter） |
+| `schedule/` | 定时推送：`store.py` 存任务（`schedules` 表）、算下次触发时间（cron 用 croniter）；`runner.py` 调度线程，到期后生成内容、交给入口推送 |
 
 模型调用链：`Kairos → 本地 AI 网关 → 模型服务`。网关只透传请求，协议适配、Agent 循环和工具执行都在 Kairos 里。默认模型是 DeepSeek（`deepseek-flash`），走 OpenAI 兼容协议；设置 `KAIROS_PROVIDER=anthropic` 改用 Anthropic Messages 协议。
 

@@ -11,6 +11,7 @@ from .models import Usage, build_model
 from .models.catalog import estimate_cost, model_info
 from .services import Services
 from .storage import Session, SessionTotals
+from .tools import Toolset
 
 DEFAULT_SYSTEM_PROMPT = """你是 Kairos，用户的个人助手。回答简洁直接，使用中文。
 需要执行操作时调用对应工具，工具返回结果后再说明结果；不需要工具时直接回答。"""
@@ -45,6 +46,8 @@ class Conversation:
         image_ids: list[int] | None = None,
         on_text: Callable[[str], None] | None = None,
         on_message: Callable[[dict], None] | None = None,
+        extra_tools: Toolset | None = None,
+        extract_memory: bool = True,
     ) -> TurnResult:
         """处理一次用户输入。
 
@@ -54,6 +57,7 @@ class Conversation:
         images 是随这条消息一起发送的图片，原样存进历史（终端贴图）；
         image_ids 是已经归档的图片编号，历史里只存引用，请求前再展开（微信发图）；
         on_text 接收正文片段；on_message 在每条新消息保存后调用，界面可以用它显示工具调用。
+        extra_tools 是只在这一轮可用的工具（定时任务的 skip_push）；extract_memory=False 时不做后台记忆提取。
         """
 
         def save_and_notify(message: dict, usage: Usage | None) -> None:
@@ -71,6 +75,10 @@ class Conversation:
         self._save(user)
         self.messages.append(user)
         tools = self.services.tools
+        if extra_tools:
+            tools = Toolset()
+            tools.add(self.services.tools)
+            tools.add(extra_tools)
         # 时间和记忆在一轮开始时取一次，这一轮里多次请求模型都用同一份，前缀相同才能命中缓存。
         now, memory = datetime.now().astimezone(), self.services.memory.snapshot()
         rules = "\n\n".join(tools.instructions)
@@ -88,9 +96,15 @@ class Conversation:
             on_text=on_text,
             on_message=save_and_notify,
         )
-        if self.services.extractor:
+        if self.services.extractor and extract_memory:
             self.services.extractor.submit(self.messages)
         return result
+
+    def append_assistant(self, text: str) -> None:
+        """把程序发出的一条消息（例如定时推送）作为助手消息存进历史，用户接着回复时模型能看到。"""
+        message = {"role": "assistant", "content": text}
+        self._save(message)
+        self.messages.append(message)
 
     def set_thinking(self, enabled: bool) -> bool:
         """切换思考模式。返回 False 表示当前模型不支持开关。"""

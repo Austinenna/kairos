@@ -50,6 +50,11 @@ class WeixinRunner:
         """请求停止。正在进行的长轮询最多再等几十秒，线程是 daemon，退出时不必等它。"""
         self.stopping.set()
 
+    def push(self, text: str) -> None:
+        """主动推送（定时任务用，调用方已持有 services.lock）：发到微信，再追加进微信当前会话。"""
+        self._reply(text)
+        self._conversation().append_assistant(text)
+
     def drain_notices(self) -> list[str]:
         notices = []
         while True:
