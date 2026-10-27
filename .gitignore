@@ -20,7 +20,13 @@ data/
 .mypy_cache/
 *.egg-info/
 
-# 本地参考资料与项目文档不纳入 Git
+# 私人内容和本地资料，不纳入 Git
 /references/
-/docs/*
-!/docs/函数注释模板.md
+/docs/
+/CLAUDE.md
+/HANDOFF.md
+/.idea
+
+# 对话导出等本地记录
+/2026-*.md
+/2026-*.html
