@@ -21,7 +21,7 @@ data/
 *.egg-info/
 
 # 私人内容和本地资料，不纳入 Git
-/references/
+/REFERENCES.md
 /docs/
 /CLAUDE.md
 /HANDOFF.md
