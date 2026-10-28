@@ -12,8 +12,10 @@ class FakeModel:
 
     def __init__(self, *responses):
         self.responses = list(responses)
+        self.requests = []
 
     def stream(self, messages, tools, on_text=None):
+        self.requests.append(messages)
         return self.responses.pop(0)
 
 
@@ -42,4 +44,24 @@ def test_model_must_read_before_editing(tmp_path, isolated_workspace, monkeypatc
     assert "还没有读过" in results[0]["error"]
     assert results[1]["content"] == "1\t- 周五体检"  # offset、limit 传 null 时用默认值
     assert (isolated_workspace / "待办.md").read_text() == "- 周六体检\n"
+    services.close()
+
+
+def test_read_file_attaches_image_in_this_turn(tmp_path, isolated_workspace, monkeypatch):
+    from PIL import Image as PILImage
+
+    isolated_workspace.mkdir()
+    PILImage.new("RGB", (4, 4), "red").save(isolated_workspace / "截图.png")
+    model = FakeModel(
+        ModelResponse(content="", tool_calls=[_call("c1", "read_file", path="截图.png")]),
+        ModelResponse(content="是一张红色的图"),
+    )
+    monkeypatch.setattr(conversation_module, "build_model", lambda *args, **kwargs: model)
+    settings = Settings(_env_file=None, kairos_model="deepseek-flash", gateway_base_url="http://gateway")
+    services = open_services(settings, tmp_path, auto_memory=False)
+
+    Conversation.create(services).respond("看看截图.png")
+
+    (tool_result,) = [message for message in model.requests[1] if message["role"] == "tool"]
+    assert [block["type"] for block in tool_result["content"]] == ["text", "image"]
     services.close()

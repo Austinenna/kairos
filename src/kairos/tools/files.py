@@ -4,16 +4,20 @@
 """
 
 from collections.abc import Callable
+from pathlib import Path
 
 from ..files.search import list_dir, search_files
 from ..files.text import MAX_LINES, TextFiles
+from ..images.prepare import IMAGE_SUFFIXES, load_image
+from ..images.refs import READ_FILE
 from .registry import Toolset, tool_schema
 
 PATH = {"type": "string", "description": "文件路径：绝对路径、~ 开头，或相对工作目录的路径"}
 
-READ_FILE = tool_schema(
-    "read_file",
-    f"读取 UTF-8 文本文件，每行前面带“行号<Tab>”。一次最多 {MAX_LINES} 行、50KB，没读完时结果里有 next_offset。",
+READ_FILE_SCHEMA = tool_schema(
+    READ_FILE,
+    f"读取 UTF-8 文本文件，每行前面带“行号<Tab>”。一次最多 {MAX_LINES} 行、50KB，没读完时结果里有 next_offset。"
+    "也能读图片（png、jpg 等），图片会附在结果后面，只在本轮可见。",
     {
         "path": PATH,
         "offset": {"type": "integer", "description": "从第几行开始读，从 1 开始，默认 1"},
@@ -62,17 +66,26 @@ SEARCH_FILES = tool_schema(
 
 def file_tools(files: TextFiles) -> Toolset:
     policy = files.policy
+
+    def read_file(path: str, offset: int = 1, limit: int = MAX_LINES) -> dict:
+        if Path(path).suffix.lower() not in IMAGE_SUFFIXES:
+            return files.read(path, offset, limit)
+        target = policy.readable(path)
+        load_image(target)  # 先试着打开一次，打不开（比如 HEIC）时在这里报错，而不是在请求前出错
+        return {"path": str(target), "image_path": str(target), "note": "图片附在这条结果后面"}
+
     rules = f"""文件工具规则：
 - 工作目录是 {policy.workspace}。只能在工作目录里新建和修改文件，相对路径也按它解析；其他位置的文件只能读。
 - 不知道文件在哪时，先用 list_dir 或 search_files 查找，不要猜路径。
+- 用户让你看某个路径下的图片时，用 read_file 读取。
 - read_file 结果每行开头的“行号<Tab>”不是文件内容。文件没读完时按 next_offset 接着读，或先搜索再读需要的部分。
 - 修改已有文件用 edit_file：先 read_file，再从结果里原样复制要换掉的文字作为 old_string，带上刚好能让它唯一的几行。
 - 新建文件或整篇重写用 write_file。写完把文件路径告诉用户。
 - 密钥凭证、系统文件和 Kairos 自己的数据不能读写。被拒绝时如实告诉用户，不要换路径或换工具绕过。"""
     return Toolset(
-        schemas=[READ_FILE, WRITE_FILE, EDIT_FILE, LIST_DIR, SEARCH_FILES],
+        schemas=[READ_FILE_SCHEMA, WRITE_FILE, EDIT_FILE, LIST_DIR, SEARCH_FILES],
         handlers={
-            "read_file": _skip_none(files.read),
+            READ_FILE: _skip_none(read_file),
             "write_file": files.write,
             "edit_file": _skip_none(files.edit),
             "list_dir": _skip_none(lambda path=".": list_dir(policy, path)),

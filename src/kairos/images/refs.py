@@ -2,7 +2,7 @@
 
 微信发来的图片已经归档，历史里只存 {"type": "image_ref", "image_id"}。展开规则：
 - 最近一条带图片的用户消息：给原图。连续发的几张图配给同一句话，所以会一起给原图。
-- 当前这一轮里 view_image 的结果：附上原图。
+- 当前这一轮里 view_image 的结果：附上原图。read_file 读图片时同样附上，原图按结果里的 image_path 读取。
 - 其余的：只给一行文字（标题、路径、描述）。
 
 这样旧图不会每轮都重复发送。只有发了新图时，上一批图才从原图变成文字，
@@ -12,8 +12,10 @@
 import json
 
 from .archive import ArchivedImage, ImageArchive
+from .prepare import load_image
 
 VIEW_IMAGE = "view_image"
+READ_FILE = "read_file"  # 文件工具，读到图片时结果里带 image_path
 
 
 def expand_image_refs(messages: list[dict], archive: ImageArchive) -> list[dict]:
@@ -39,13 +41,13 @@ def _has_refs(message: dict) -> bool:
 
 
 def _view_call_ids(messages: list[dict]) -> set[str]:
-    """历史里所有 view_image 调用的 ID，用来认出哪些工具结果是 view_image 的。"""
+    """历史里所有 view_image 和 read_file 调用的 ID，用来认出哪些工具结果可能要附原图。"""
     return {
         call["id"]
         for message in messages
         if message["role"] == "assistant"
         for call in message.get("tool_calls", [])
-        if call["function"]["name"] == VIEW_IMAGE
+        if call["function"]["name"] in (VIEW_IMAGE, READ_FILE)
     }
 
 
@@ -66,10 +68,13 @@ def _expand(block: dict, archive: ImageArchive, pixels: bool) -> list[dict]:
 
 
 def _attach_viewed(content: str, archive: ImageArchive) -> str | list[dict]:
-    """view_image 成功时，在工具结果文字后面附上原图。"""
+    """view_image 或 read_file 读到图片时，在工具结果文字后面附上原图。"""
     result = json.loads(content)
-    image = archive.get(result["image_id"]) if "image_id" in result else None
-    picture = archive.pixels(image) if image else None
+    if "image_path" in result:
+        picture = load_image(result["image_path"])
+    else:
+        image = archive.get(result["image_id"]) if "image_id" in result else None
+        picture = archive.pixels(image) if image else None
     if picture is None:
         return content
     return [{"type": "text", "text": content}, picture.to_block()]

@@ -87,7 +87,7 @@ class OpenAICompatibleModel:
 
 
 def _to_openai_messages(messages: list[dict]) -> list[dict]:
-    """转换整段消息。OpenAI 的工具结果只能是文字，带图片的工具结果（view_image）要拆开：
+    """转换整段消息。OpenAI 的工具结果只能是文字，带图片的工具结果（view_image、read_file 读图片）要拆开：
     文字留在工具结果里，图片放进紧跟在这批工具结果后面的一条用户消息。"""
     converted: list[dict] = []
     images: list[dict] = []  # 这批工具结果里拆出来的图片
@@ -107,7 +107,7 @@ def _to_openai_messages(messages: list[dict]) -> list[dict]:
 
 
 def _viewed_images(images: list[dict]) -> dict:
-    return {"role": "user", "content": [{"type": "text", "text": "view_image 取回的原图："}, *images]}
+    return {"role": "user", "content": [{"type": "text", "text": "工具取回的图片："}, *images]}
 
 
 def _to_openai(message: dict) -> dict:
