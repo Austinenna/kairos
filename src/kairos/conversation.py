@@ -5,6 +5,7 @@ from datetime import datetime
 
 from .agent import TurnResult, run_turn
 from .agent.context import build_request
+from .files.text import TextFiles
 from .images.prepare import Image
 from .images.refs import expand_image_refs
 from .models import Usage, build_model
@@ -12,6 +13,7 @@ from .models.catalog import estimate_cost, model_info
 from .services import Services
 from .storage import Session, SessionTotals
 from .tools import Toolset
+from .tools.files import file_tools
 
 DEFAULT_SYSTEM_PROMPT = """你是 Kairos，用户的个人助手。回答简洁直接，使用中文。
 需要执行操作时调用对应工具，工具返回结果后再说明结果；不需要工具时直接回答。"""
@@ -24,6 +26,8 @@ class Conversation:
         self.session = session
         self.messages = services.sessions.load_messages(session.id)
         self.model = self._build_model()
+        # 文件工具按会话创建：先读后改检查要知道“这个会话”读过哪些文件。重新载入会话后需要重新读。
+        self.file_tools = file_tools(TextFiles(services.file_policy))
 
     @classmethod
     def create(
@@ -74,10 +78,10 @@ class Conversation:
         user = {"role": "user", "content": content}
         self._save(user)
         self.messages.append(user)
-        tools = self.services.tools
+        tools = Toolset()
+        tools.add(self.services.tools)
+        tools.add(self.file_tools)
         if extra_tools:
-            tools = Toolset()
-            tools.add(self.services.tools)
             tools.add(extra_tools)
         # 时间和记忆在一轮开始时取一次，这一轮里多次请求模型都用同一份，前缀相同才能命中缓存。
         now, memory = datetime.now().astimezone(), self.services.memory.snapshot()

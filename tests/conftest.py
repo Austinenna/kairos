@@ -12,3 +12,11 @@ def isolated_app_dir(tmp_path, monkeypatch) -> Path:
     app_dir.mkdir()
     monkeypatch.setattr(config, "get_app_dir", lambda: app_dir)
     return app_dir
+
+
+@pytest.fixture(autouse=True)
+def isolated_workspace(tmp_path, monkeypatch) -> Path:
+    """文件工具的工作目录也换成临时目录，测试不会写进真实的 ~/Documents/kairos。"""
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr("kairos.services.get_workspace_dir", lambda: workspace)
+    return workspace

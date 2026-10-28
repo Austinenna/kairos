@@ -109,10 +109,11 @@ uv run kairos ─▶ terminal/app.py ─▶ open_services()（services.py，全�
 | `services.py` | 共享依赖的组装；`lock` 让终端和微信轮流使用数据库 |
 | `storage/sessions.py` | 两张表：`sessions`、`messages`（完整消息 JSON + 用量和费用） |
 | `memory/` | 记忆文件读写、后台提取 |
-| `tools/` | 工具注册表、记忆工具、历史会话工具、图片搜索工具、定时任务工具 |
+| `tools/` | 工具注册表、记忆工具、历史会话工具、图片搜索工具、定时任务工具、文件工具 |
 | `terminal/` | 主循环和命令、输入框（图片）、Markdown 流式渲染、读取 macOS 剪贴板 |
 | `wechat/` | iLink 协议、微信收发线程 |
 | `images/` | `prepare.py` 图片预处理；`archive.py` 存原图、`images` 表；`classifier.py` 后台线程用自己的数据库连接让模型分类，不占用对话；`refs.py` 请求前把历史里的图片引用展开：最近一批给原图，更早的给描述 |
+| `files/` | 文件工具的实际逻辑：`policy.py` 路径规则（拒绝清单拦系统目录、密钥凭证、会自动执行的配置和 `~/.kairos`，写入只允许工作目录）；`text.py` 文本文件读写改，先读后改检查、原子写入；`search.py` 列目录、按文件名或内容搜索 |
 | `schedule/` | 定时推送：`store.py` 存任务（`schedules` 表）、算下次触发时间（cron 用 croniter）；`runner.py` 调度线程，到期后生成内容、交给入口推送 |
 
 模型调用链：`Kairos → 本地 AI 网关 → 模型服务`。网关只透传请求，协议适配、Agent 循环和工具执行都在 Kairos 里。默认模型是 DeepSeek（`deepseek-flash`），走 OpenAI 兼容协议；设置 `KAIROS_PROVIDER=anthropic` 改用 Anthropic Messages 协议。
@@ -128,6 +129,8 @@ uv run kairos ─▶ terminal/app.py ─▶ open_services()（services.py，全�
 | `memories/` | 记忆 |
 | `files/` | 归档的图片，按分类分文件夹；分类失败的留在 `inbox/` |
 | `channels/weixin/` | 微信凭据 `account.json`、收发状态 `state.json` |
+
+文件工具的工作目录是 `~/Documents/kairos`：模型只能在这里新建和修改文件，其他位置只能读。
 
 ## 开发
 

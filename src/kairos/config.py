@@ -16,6 +16,11 @@ def get_app_dir() -> Path:
     return Path.home() / ".kairos"
 
 
+def get_workspace_dir() -> Path:
+    """工作目录：文件工具唯一能写入的地方（写入白名单），放模型生成和修改的文件。"""
+    return Path.home() / "Documents" / "kairos"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file_encoding="utf-8", extra="ignore")
 
