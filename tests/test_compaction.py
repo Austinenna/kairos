@@ -1,7 +1,8 @@
 import pytest
 
 from kairos.compaction.budget import compact_threshold, estimate_tokens
-from kairos.models import Usage
+from kairos.compaction.summary import SummaryFailed, summarize
+from kairos.models import ModelResponse, Usage
 from kairos.storage import SessionStore, open_db
 
 
@@ -44,3 +45,40 @@ def test_rows_keep_system_prompt_and_usage_and_latest_compaction_wins(store):
     kept = store.load_rows(session.id, from_id=compaction.first_kept_message_id)
     assert [row.message["content"] for row in kept] == ["你是助手", "二", "好"]
     assert len(store.load_messages(session.id)) == 5  # 原文一条都没少
+
+
+class ReplyModel:
+    model = "deepseek-flash"
+
+    def __init__(self, response):
+        self.response = response
+        self.requests = []
+
+    def stream(self, messages, tools, on_text=None):
+        self.requests.append((messages, tools))
+        return self.response
+
+
+def test_summary_request_is_plain_text_without_tools_or_reasoning():
+    call = {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": '{"path": "a.txt"}'}}
+    messages = [
+        {"role": "user", "content": "读一下 a.txt"},
+        {"role": "assistant", "content": "", "reasoning_content": "我在想", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "c1", "content": "很长" * 2000},
+    ]
+    model = ReplyModel(ModelResponse(content="1. 主要请求和意图：读文件", finish_reason="stop"))
+
+    assert summarize(model, messages, previous="之前聊过天气", focus="文件名") == "1. 主要请求和意图：读文件"
+
+    request, tools = model.requests[0]
+    assert tools == [] and "补充要求：文件名" in request[0]["content"]
+    text = request[1]["content"]
+    assert text.startswith("【之前的摘要】\n之前聊过天气") and "[用户] 读一下 a.txt" in text
+    assert "[调用工具] read_file" in text and "我在想" not in text
+    assert "后面 2000 字省略" in text  # 工具结果截到 2000 字符
+
+
+def test_truncated_summary_is_a_failure():
+    model = ReplyModel(ModelResponse(content="1. 主要请求", finish_reason="length"))
+    with pytest.raises(SummaryFailed):
+        summarize(model, [{"role": "user", "content": "你好"}])
