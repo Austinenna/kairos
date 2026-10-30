@@ -20,6 +20,9 @@ class CompactResult:
     tokens_before: int
     tokens_after: int  # 估算值，不含请求时才加上的规则、记忆和工具定义
 
+    def notice(self) -> str:
+        return f"已压缩上下文：{self.tokens_before:,} → 约 {self.tokens_after:,} tokens"
+
 
 def load_context(sessions: SessionStore, session_id: str) -> list[dict]:
     """发给模型的历史。没压缩过就是完整历史。"""

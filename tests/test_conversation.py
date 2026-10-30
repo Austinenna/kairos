@@ -121,7 +121,7 @@ def test_auto_compaction_summarizes_older_turns_and_keeps_recent_ones(services, 
     request = model.requests[3]
     assert request[2]["role"] == "user" and "摘要正文" in request[2]["content"]
     assert [m["content"] for m in request[3:-1]] == ["第二", "答二", "第三"]
-    assert notices and notices[0].startswith("已压缩上下文")
+    assert notices[-1].startswith("已压缩上下文")
     assert len(services.sessions.load_messages(conversation.session.id)) == 7  # 原文一条都没删
     assert conversation.context_tokens() == 55  # 用压缩之后那次请求的用量
 
@@ -156,6 +156,6 @@ def test_failed_compaction_keeps_history_and_still_answers(services, new, compac
     conversation.respond("第二")
 
     assert conversation.respond("第三", on_notice=notices.append).content == "答三"
-    assert "压缩失败" in notices[0]
+    assert "压缩失败" in notices[-1]
     assert services.sessions.latest_compaction(conversation.session.id) is None
     assert model.requests[3][2]["content"] == "第一"  # 这一轮用的是完整历史

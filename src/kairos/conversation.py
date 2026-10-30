@@ -165,13 +165,14 @@ class Conversation:
         tokens = self.context_tokens([user])
         if threshold is None or tokens <= threshold:
             return
+        notify("上下文超过压缩阈值，正在把较早的对话压缩成摘要……")
         try:
             result = self.compact(tokens_before=tokens)
         except Exception as error:  # 压缩失败不影响这一轮：历史不变，照常用完整历史请求，下一轮开始时会再试
             notify(f"上下文压缩失败，这一轮仍用完整历史：{type(error).__name__}: {error}")
             return
         if result:
-            notify(f"已压缩上下文：{result.tokens_before:,} → 约 {result.tokens_after:,} tokens")
+            notify(result.notice())
 
     def _build_model(self, thinking: bool | None = None):
         """按会话保存的协议和模型创建适配器；密钥和地址仍用当前配置。thinking 不传时用会话的设置。"""

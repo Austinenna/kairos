@@ -36,12 +36,14 @@ uv run kairos --channels terminal  # 只启动终端（或 --channels weixin 只
 | `/rename 标题` | 重命名当前会话 |
 | `/think` | 切换思考模式（仅支持的模型） |
 | `/history` | 查看当前会话的消息 |
+| `/compact [重点]` | 把较早的对话压缩成摘要；可以写上摘要要重点保留的内容 |
 | `/file 路径` | 把文本文件的内容作为消息发送 |
 | `/help`、`/exit` | 帮助、退出（Ctrl+D 或连按两次 Ctrl+C 也可以退出） |
 
 - **Enter** 发送，**Alt+Enter** 换行。生成回答时按 **Esc** 中断，已显示的部分会保留在历史里。
 - 输入框里按 **Ctrl+C** 清空输入，2 秒内再按一次退出；生成中按 Ctrl+C 也会中断，紧接着再按一次退出。
-- 输入框下方的状态行显示：模型、上下文占用（最近一次请求的输入量 / 窗口大小）、本会话累计用量和估算费用。
+- 输入框下方的状态行显示：模型、上下文占用（当前上下文 / 自动压缩阈值，接近阈值时提示“即将压缩”）、本会话累计用量和估算费用。
+- 上下文超过阈值时，下一轮开始前会自动把较早的对话压缩成摘要，最近约 20K token 的原文保留不动。阈值 = 模型窗口 × `KAIROS_AUTO_COMPACT_WINDOW_PERCENT`（默认 50%）− 33K。数据库里的原文不会删除。
 
 ### 图片
 
@@ -92,7 +94,7 @@ uv run kairos ─▶ terminal/app.py ─▶ open_services()（services.py，全�
                       │
                       ├─ 终端（主线程）──┐
                       └─ 微信（后台线程）┴─▶ Conversation（conversation.py，每个会话一份）
-                                              respond()：保存用户消息 → run_turn → 提交记忆提取
+                                              respond()：超过阈值先压缩 → 保存用户消息 → run_turn → 提交记忆提取
                                                    │
                                                    ▼
                                      agent/loop.py  run_turn：请求模型 ⇄ 执行工具
@@ -107,7 +109,8 @@ uv run kairos ─▶ terminal/app.py ─▶ open_services()（services.py，全�
 | `models/` | `base.py` 统一的 `ModelResponse`；两个协议适配器；`catalog.py` 模型能力和价格 |
 | `conversation.py` | 一个会话：历史、模型、`respond()` |
 | `services.py` | 共享依赖的组装；`lock` 让终端和微信轮流使用数据库 |
-| `storage/sessions.py` | 两张表：`sessions`、`messages`（完整消息 JSON + 用量和费用） |
+| `storage/sessions.py` | 三张表：`sessions`、`messages`（完整消息 JSON + 用量和费用）、`compactions`（每次压缩的摘要和保留原文的起点） |
+| `compaction/` | 上下文压缩：`budget.py` 压缩阈值和 token 估算；`summary.py` 摘要提示词（Claude Code 九节结构的中文版）、把对话转成纯文本；`compact.py` 选切点、保存摘要、拼出发给模型的历史 |
 | `memory/` | 记忆文件读写、后台提取 |
 | `tools/` | 工具注册表、记忆工具、历史会话工具、图片搜索工具、定时任务工具、文件工具 |
 | `terminal/` | 主循环和命令、输入框（图片）、Markdown 流式渲染、读取 macOS 剪贴板 |
@@ -125,7 +128,7 @@ uv run kairos ─▶ terminal/app.py ─▶ open_services()（services.py，全�
 | 路径 | 内容 |
 |---|---|
 | `.env` | 配置和 API Key |
-| `kairos.db` | 会话、消息、用量、待办，以及归档图片的信息（`images` 表） |
+| `kairos.db` | 会话、消息、用量、压缩摘要、待办，以及归档图片的信息（`images` 表） |
 | `memories/` | 记忆 |
 | `files/` | 归档的图片，按分类分文件夹；分类失败的留在 `inbox/` |
 | `channels/weixin/` | 微信凭据 `account.json`、收发状态 `state.json` |

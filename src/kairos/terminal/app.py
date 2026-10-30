@@ -12,10 +12,10 @@ from queue import Queue
 
 from pydantic import ValidationError
 
+from ..compaction.budget import WARNING_BUFFER
 from ..config import Settings, get_app_dir
 from ..conversation import Conversation
 from ..images.prepare import Image, text_of
-from ..models.catalog import model_info
 from ..schedule.runner import ScheduleRunner
 from ..services import Services, open_services
 from ..tools import Toolset
@@ -34,6 +34,7 @@ HELP = """命令：
   /rename 标题      重命名当前会话
   /think            切换思考模式
   /history          查看当前会话的消息
+  /compact [重点]   把较早的对话压缩成摘要，可以写上摘要要重点保留的内容
   /file 路径        把一个文本文件的内容作为消息发送
   /help             显示本帮助
   /exit             退出（Ctrl+D、连按两次 Ctrl+C 也可以）
@@ -207,7 +208,9 @@ def taking_turn(services: Services, renderer: Renderer) -> Iterator[None]:
 def send(conversation: Conversation, renderer: Renderer, text: str, images: list[Image]) -> bool:
     """发送一条消息并显示回答。中断和出错都只结束这一轮，程序继续运行。返回是否被中断。"""
     try:
-        conversation.respond(text, images, on_text=renderer.text_delta, on_message=renderer.message)
+        conversation.respond(
+            text, images, on_text=renderer.text_delta, on_message=renderer.message, on_notice=renderer.info
+        )
         renderer.end_text()
     except KeyboardInterrupt:
         renderer.end_text()
@@ -247,6 +250,8 @@ def run_command(
         for message in conversation.messages:
             calls = [call["function"]["name"] for call in message.get("tool_calls", [])]
             renderer.info(f"[{message['role']}] {text_of(message['content'] or '')[:200]} {' '.join(calls)}")
+    elif command == "/compact":
+        compact_now(conversation, renderer, argument)
     elif command == "/file":
         path = Path(argument).expanduser()
         send(conversation, renderer, f"文件 {path.name} 的内容：\n\n{path.read_text(encoding='utf-8')}", [])
@@ -257,15 +262,31 @@ def run_command(
     return conversation
 
 
+def compact_now(conversation: Conversation, renderer: Renderer, focus: str) -> None:
+    """手动压缩。按 Esc 或 Ctrl+C 放弃，什么都不保存；出错只显示，不影响继续对话。"""
+    renderer.info("正在把较早的对话压缩成摘要……")
+    try:
+        with EscInterrupt():
+            result = conversation.compact(focus)
+    except KeyboardInterrupt:
+        renderer.info("已取消压缩。")
+        return
+    except Exception as error:
+        renderer.error(f"压缩失败：{type(error).__name__}: {error}")
+        return
+    renderer.info(result.notice() if result else "没有可以压缩的内容：最近约 20K token 的原文会原样保留。")
+
+
 def status_line(conversation: Conversation) -> str:
-    """输入框下方的状态：模型、上下文占用、本会话累计用量和费用。"""
+    """输入框下方的状态：模型、上下文占用（相对压缩阈值）、本会话累计用量和费用。"""
     totals = conversation.totals()
     usage = totals.usage
-    window = model_info(conversation.session.model).context_window
-    context = "上下文 —"
-    if totals.last_input_tokens and window:
-        used = totals.last_input_tokens
-        context = f"上下文 {short(used)}/{short(window)} ({used / window:.1%})"
+    used, threshold = conversation.context_tokens(), conversation.compact_threshold()
+    context = f"上下文 {short(used)}"
+    if threshold:
+        context += f"/{short(threshold)} ({used / threshold:.0%})"
+        if used >= threshold - WARNING_BUFFER:
+            context += " 即将压缩"
     thinking = " · 思考开" if conversation.session.thinking else ""
     return (
         f"{conversation.session.model}{thinking} · {context} · "
