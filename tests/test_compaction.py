@@ -1,7 +1,9 @@
 import pytest
+from pydantic import ValidationError
 
 from kairos.compaction.budget import compact_threshold, estimate_tokens
 from kairos.compaction.summary import SummaryFailed, summarize
+from kairos.config import Settings
 from kairos.models import ModelResponse, Usage
 from kairos.storage import SessionStore, open_db
 
@@ -16,6 +18,11 @@ def store(tmp_path):
 def test_threshold_follows_claude_code_formula_on_a_share_of_the_window():
     assert compact_threshold(1_048_576, 50) == 524_288 - 20_000 - 13_000
     assert compact_threshold(None, 50) is None  # 窗口未知：不自动压缩
+
+
+def test_percent_outside_10_to_90_is_rejected():
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, kairos_model="m", gateway_base_url="http://g", kairos_auto_compact_window_percent=95)
 
 
 def test_estimate_counts_text_tool_calls_and_images():

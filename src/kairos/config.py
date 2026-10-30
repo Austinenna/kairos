@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     kairos_model: str = Field(min_length=1)  # 必填
     anthropic_base_url: str | None = None  # 不填时用 gateway_base_url 去掉末尾的 /v1
     anthropic_max_tokens: int = 4096
-    # 自动压缩窗口占模型窗口的百分比：阈值 = 模型窗口 × 百分比 − 20K − 13K（见 compaction/budget.py）。
-    kairos_auto_compact_window_percent: int = Field(default=50, gt=0, le=100)
+    # 自动压缩窗口占模型窗口的百分比（10–90）：阈值 = 模型窗口 × 百分比 − 20K − 13K（见 compaction/budget.py）。
+    kairos_auto_compact_window_percent: int = Field(default=50, ge=10, le=90)
     # 要加载的业务工具模块，格式 "模块:函数"。不配置时加载待办；设为 [] 不加载任何业务工具。
     kairos_tool_factories: list[str] = ["kairos_todo.tools:build_tools"]

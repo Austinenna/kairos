@@ -98,9 +98,9 @@ def test_images_are_sent_and_history_tools_see_only_text(services, new):
 
 
 @pytest.fixture
-def compact_early(services, monkeypatch):
-    """阈值调成负数、只保留最近一条用户消息起的原文，第三轮开始就会压缩。"""
-    services.settings.kairos_auto_compact_window_percent = 1
+def compact_early(monkeypatch):
+    """阈值直接设为 0（不经过配置）、只保留最近一条用户消息起的原文，第三轮开始就会压缩。"""
+    monkeypatch.setattr(Conversation, "compact_threshold", lambda self: 0)
     monkeypatch.setattr(compact_module, "KEEP_RECENT_TOKENS", 1)
 
 
@@ -126,13 +126,13 @@ def test_auto_compaction_summarizes_older_turns_and_keeps_recent_ones(services, 
     assert conversation.context_tokens() == 55  # 用压缩之后那次请求的用量
 
 
-def test_manual_compaction_ignores_stale_usage_and_forgets_read_files(services, new, compact_early):
+def test_manual_compaction_ignores_stale_usage_and_forgets_read_files(services, new, compact_early, monkeypatch):
     conversation, _ = new(
         ModelResponse(content="答一", usage=Usage(900_000, 0, 10)),
         ModelResponse(content="答二", usage=Usage(900_000, 0, 10)),
         ModelResponse(content="摘要正文", finish_reason="stop"),
     )
-    services.settings.kairos_auto_compact_window_percent = 100
+    monkeypatch.setattr(Conversation, "compact_threshold", lambda self: None)  # 这个测试只测手动压缩
     conversation.respond("第一")
     conversation.respond("第二")
     file_tools = conversation.file_tools
