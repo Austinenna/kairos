@@ -3,6 +3,7 @@ import json
 import pytest
 
 from kairos import conversation as conversation_module
+from kairos.compaction import compact as compact_module
 from kairos.config import Settings
 from kairos.conversation import Conversation
 from kairos.images.prepare import Image
@@ -94,3 +95,67 @@ def test_images_are_sent_and_history_tools_see_only_text(services, new):
     assert services.sessions.get(conversation.session.id).title == "这是什么 [图片：cat.png]"
     page = services.tools.handlers["read_session"](conversation.session.id)
     assert page["messages"][0]["content"] == "这是什么 [图片：cat.png]"  # 不含 base64
+
+
+@pytest.fixture
+def compact_early(services, monkeypatch):
+    """阈值调成负数、只保留最近一条用户消息起的原文，第三轮开始就会压缩。"""
+    services.settings.kairos_auto_compact_window_percent = 1
+    monkeypatch.setattr(compact_module, "KEEP_RECENT_TOKENS", 1)
+
+
+def test_auto_compaction_summarizes_older_turns_and_keeps_recent_ones(services, new, compact_early):
+    conversation, model = new(
+        ModelResponse(content="答一", usage=Usage(100, 0, 10)),
+        ModelResponse(content="答二", usage=Usage(200, 0, 10)),
+        ModelResponse(content="摘要正文", finish_reason="stop"),
+        ModelResponse(content="答三", usage=Usage(50, 0, 5)),
+    )
+    notices = []
+    conversation.respond("第一")
+    conversation.respond("第二")  # 只有一轮可以压缩时不压缩：至少保留最近一整轮
+    conversation.respond("第三", on_notice=notices.append)
+
+    summary_request = model.requests[2][1]["content"]
+    assert "[用户] 第一" in summary_request and "第二" not in summary_request
+    request = model.requests[3]
+    assert request[2]["role"] == "user" and "摘要正文" in request[2]["content"]
+    assert [m["content"] for m in request[3:-1]] == ["第二", "答二", "第三"]
+    assert notices and notices[0].startswith("已压缩上下文")
+    assert len(services.sessions.load_messages(conversation.session.id)) == 7  # 原文一条都没删
+    assert conversation.context_tokens() == 55  # 用压缩之后那次请求的用量
+
+
+def test_manual_compaction_ignores_stale_usage_and_forgets_read_files(services, new, compact_early):
+    conversation, _ = new(
+        ModelResponse(content="答一", usage=Usage(900_000, 0, 10)),
+        ModelResponse(content="答二", usage=Usage(900_000, 0, 10)),
+        ModelResponse(content="摘要正文", finish_reason="stop"),
+    )
+    services.settings.kairos_auto_compact_window_percent = 100
+    conversation.respond("第一")
+    conversation.respond("第二")
+    file_tools = conversation.file_tools
+
+    result = conversation.compact(focus="待办")
+
+    assert result.tokens_before == 900_010
+    assert conversation.context_tokens() < 1000  # 压缩前的用量已经过时，改为整段估算
+    assert conversation.file_tools is not file_tools  # “已读”记录清空了
+
+
+def test_failed_compaction_keeps_history_and_still_answers(services, new, compact_early):
+    conversation, model = new(
+        ModelResponse(content="答一"),
+        ModelResponse(content="答二"),
+        ModelResponse(content="摘要写到一半", finish_reason="length"),
+        ModelResponse(content="答三"),
+    )
+    notices = []
+    conversation.respond("第一")
+    conversation.respond("第二")
+
+    assert conversation.respond("第三", on_notice=notices.append).content == "答三"
+    assert "压缩失败" in notices[0]
+    assert services.sessions.latest_compaction(conversation.session.id) is None
+    assert model.requests[3][2]["content"] == "第一"  # 这一轮用的是完整历史
