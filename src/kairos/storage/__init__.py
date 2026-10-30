@@ -1,6 +1,6 @@
 """本地 SQLite 存储。"""
 
 from .db import open_db
-from .sessions import Session, SessionStore, SessionTotals
+from .sessions import Compaction, Session, SessionStore, SessionTotals, StoredMessage
 
-__all__ = ["Session", "SessionStore", "SessionTotals", "open_db"]
+__all__ = ["Compaction", "Session", "SessionStore", "SessionTotals", "StoredMessage", "open_db"]

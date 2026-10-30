@@ -1,4 +1,4 @@
-"""会话存储：两张表，sessions 记会话信息，messages 按顺序记完整消息和用量。"""
+"""会话存储：sessions 记会话信息，messages 按顺序记完整消息和用量，compactions 记每次压缩的摘要。"""
 
 import json
 import sqlite3
@@ -34,6 +34,16 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at          TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id);
+-- 上下文压缩：原文不删不改，这里记下摘要和“从哪条消息开始发原文”，最新一行生效。
+CREATE TABLE IF NOT EXISTS compactions (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id            TEXT NOT NULL REFERENCES sessions(id),
+    summary               TEXT NOT NULL,
+    first_kept_message_id INTEGER NOT NULL,  -- 从这条消息开始发原文，之前的由摘要代替
+    last_message_id       INTEGER NOT NULL,  -- 压缩时的最后一条消息；之后的助手消息用量才反映压缩后的大小
+    tokens_before         INTEGER NOT NULL,  -- 压缩前估算的上下文大小
+    created_at            TEXT NOT NULL
+);
 """
 
 DEFAULT_TITLE = "新会话"
@@ -49,6 +59,22 @@ class Session:
     created_at: str
     updated_at: str
     channel: str
+
+
+@dataclass
+class StoredMessage:
+    """数据库里的一条消息，带上压缩要用的编号和用量。"""
+
+    id: int
+    message: dict
+    context_tokens: int | None  # 助手消息才有：这次请求的输入 + 输出，即请求结束时上下文的实际大小
+
+
+@dataclass
+class Compaction:
+    summary: str
+    first_kept_message_id: int
+    last_message_id: int
 
 
 @dataclass
@@ -141,8 +167,36 @@ class SessionStore:
                 )
 
     def load_messages(self, session_id: str) -> list[dict]:
-        rows = self.db.execute("SELECT message FROM messages WHERE session_id = ? ORDER BY id", (session_id,))
-        return [json.loads(row["message"]) for row in rows]
+        """完整历史，不考虑压缩。发给模型的历史用 compaction.compact.load_context()。"""
+        return [row.message for row in self.load_rows(session_id)]
+
+    def load_rows(self, session_id: str, from_id: int = 0) -> list[StoredMessage]:
+        """第一条 system 提示词，加上 id >= from_id 的消息。"""
+        rows = self.db.execute(
+            """SELECT id, message, input_tokens + output_tokens AS context_tokens FROM messages
+               WHERE session_id = ? AND (id >= ? OR role = 'system') ORDER BY id""",
+            (session_id, from_id),
+        )
+        return [StoredMessage(row["id"], json.loads(row["message"]), row["context_tokens"]) for row in rows]
+
+    def add_compaction(
+        self, session_id: str, summary: str, first_kept_message_id: int, last_message_id: int, tokens_before: int
+    ) -> None:
+        with self.db:
+            self.db.execute(
+                """INSERT INTO compactions (session_id, summary, first_kept_message_id, last_message_id,
+                                            tokens_before, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (session_id, summary, first_kept_message_id, last_message_id, tokens_before, _now()),
+            )
+
+    def latest_compaction(self, session_id: str) -> Compaction | None:
+        row = self.db.execute(
+            """SELECT summary, first_kept_message_id, last_message_id FROM compactions
+               WHERE session_id = ? ORDER BY id DESC LIMIT 1""",
+            (session_id,),
+        ).fetchone()
+        return Compaction(**dict(row)) if row else None
 
     def totals(self, session_id: str) -> SessionTotals:
         """汇总会话的用量和费用。SUM 会跳过空值，所以缺项的请求不计入。"""
