@@ -81,6 +81,7 @@ uv run --with 'qrcode[pil]' python -m kairos.wechat   # 首次扫码登录
 ### 待办和历史
 
 - 待办：直接说“明天下午三点提醒我交房租”“列出待办”“删除买牛奶那条”。待办模块在 `src/kairos_todo/`，只依赖标准库，可以通过 `KAIROS_TOOL_FACTORIES` 关掉。
+- 联网：问最新消息、价格、版本时，模型会搜索网页（默认 5 条短摘要），说“再查查”会换关键词、多搜几条并看完整摘要，需要时抓取网页原文。请求经网关转发到 DeepSeek，按次计费，回答末尾附来源链接。
 - 历史：可以问“之前我们讨论过……吗”“今天微信里聊了什么”，模型会搜索、按日期列出并阅读以前的会话。终端和微信的会话记在同一份历史里，`/sessions` 会标出每个会话来自哪个入口。
 
 ## 架构
@@ -112,11 +113,12 @@ uv run kairos ─▶ terminal/app.py ─▶ open_services()（services.py，全�
 | `storage/sessions.py` | 三张表：`sessions`、`messages`（完整消息 JSON + 用量和费用）、`compactions`（每次压缩的摘要和保留原文的起点） |
 | `compaction/` | 上下文压缩：`budget.py` 压缩阈值和 token 估算；`summary.py` 摘要提示词（Claude Code 九节结构的中文版）、把对话转成纯文本；`compact.py` 选切点、保存摘要、拼出发给模型的历史 |
 | `memory/` | 记忆文件读写、后台提取 |
-| `tools/` | 工具注册表、记忆工具、历史会话工具、图片搜索工具、定时任务工具、文件工具 |
+| `tools/` | 工具注册表、记忆工具、历史会话工具、图片搜索工具、定时任务工具、文件工具、联网工具 |
 | `terminal/` | 主循环和命令、输入框（图片）、Markdown 流式渲染、读取 macOS 剪贴板 |
 | `wechat/` | iLink 协议、微信收发线程 |
 | `images/` | `prepare.py` 图片预处理；`archive.py` 存原图、`images` 表；`classifier.py` 后台线程用自己的数据库连接让模型分类，不占用对话；`refs.py` 请求前把历史里的图片引用展开：最近一批给原图，更早的给描述；本轮 `view_image` 和 `read_file` 读到的图片附上原图 |
 | `files/` | 文件工具的实际逻辑：`policy.py` 路径规则（拒绝清单拦系统目录、密钥凭证、会自动执行的配置和 `~/.kairos`，写入只允许工作目录）；`text.py` 文本文件读写改，先读后改检查、原子写入；`search.py` 列目录、按文件名或内容搜索 |
+| `web/` | 联网工具的实际逻辑：`client.py` 经网关调用 DeepSeek 的搜索和抓取接口（请求体与原生接口相同，不带 model）；`results.py` 整理结果：只留标题、链接、站点、日期和摘要，短摘要模式每条 800 字，抓取正文最多 5 万字，并标明是网页资料 |
 | `schedule/` | 定时推送：`store.py` 存任务（`schedules` 表）、算下次触发时间（cron 用 croniter）；`runner.py` 调度线程，到期后生成内容、交给入口推送 |
 
 模型调用链：`Kairos → 本地 AI 网关 → 模型服务`。网关只透传请求，协议适配、Agent 循环和工具执行都在 Kairos 里。默认模型是 DeepSeek（`deepseek-flash`），走 OpenAI 兼容协议；设置 `KAIROS_PROVIDER=anthropic` 改用 Anthropic Messages 协议。

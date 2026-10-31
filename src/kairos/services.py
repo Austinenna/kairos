@@ -27,6 +27,8 @@ from .tools.history import history_tools
 from .tools.images import image_tools
 from .tools.memory import primary_memory_tools
 from .tools.schedules import schedule_tools
+from .tools.web import web_tools
+from .web.client import WebClient
 
 
 @dataclass
@@ -68,6 +70,7 @@ def open_services(settings: Settings, data_dir: Path, *, auto_memory: bool = Tru
     # 后台任务带上核心记忆，用户的长期指令在哪里都生效。没有 read_memory，所以不给主题索引。
     classifier = ImageClassifier(db_path, data_dir / "files", lambda: build_model(settings), memory.core)
     tools.add(image_tools(images))
+    tools.add(web_tools(WebClient(settings.gateway_base_url, settings.kairos_api_key)))
     extractor = MemoryExtractor(memory, lambda: build_model(settings)) if auto_memory else None
     file_policy = FilePolicy(home=Path.home(), workspace=get_workspace_dir())
     return Services(
