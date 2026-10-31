@@ -9,6 +9,7 @@ from test_archive import FilingModel, jpeg_bytes
 
 from kairos import conversation as conversation_module
 from kairos import services as services_module
+from kairos.compaction.compact import CompactResult
 from kairos.config import Settings
 from kairos.models import ModelResponse
 from kairos.services import open_services
@@ -52,6 +53,22 @@ def test_message_is_answered_and_session_survives_restart(runner, tmp_path):
     assert state["session_id"] == runner.conversation.session.id  # 重启后接着用 /new 之后的会话
     session = runner.services.sessions.get(state["session_id"])
     assert (session.title, session.channel) == ("第二个会话", "weixin")
+
+
+def test_compact_command_passes_focus(runner, monkeypatch):
+    focuses = []
+
+    def compact(self, focus=""):
+        focuses.append(focus)
+        return CompactResult(tokens_before=90_000, tokens_after=20_000) if focus else None
+
+    monkeypatch.setattr(runner_module.Conversation, "compact", compact)
+    runner._handle(Incoming("/compact 保留搜索结论", [], "token-1"))
+    runner._handle(Incoming("/compact", [], "token-2"))
+
+    assert focuses == ["保留搜索结论", ""]
+    assert runner.sent[0] == ("已压缩上下文：90,000 → 约 20,000 tokens", "token-1")
+    assert runner.sent[1][0].startswith("没有可以压缩的内容")
 
 
 def test_poll_keeps_only_complete_messages_from_owner(monkeypatch):

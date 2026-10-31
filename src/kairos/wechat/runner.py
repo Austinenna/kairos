@@ -24,7 +24,10 @@ from ..images.archive import ArchivedImage
 from ..services import Services
 from .api import Credentials, Incoming, WeixinClient, WeixinError
 
-HELP = "直接发文字就可以对话；发图片会自动存档并分类。\n/new 开始新会话\n/help 显示本帮助"
+HELP = (
+    "直接发文字就可以对话；发图片会自动存档并分类。\n/new 开始新会话\n"
+    "/compact [重点] 把较早的对话压缩成摘要，可以写上要重点保留的内容\n/help 显示本帮助"
+)
 REPLY_BYTES = 1800  # 单条微信消息的长度上限（UTF-8 字节），更长的回答拆成几条发
 RETRY_SECONDS = 10  # 网络出错后隔多久再试
 PAIR_SECONDS = 15 * 60  # 最后一张图之后多久之内说的话，才把这些图带进对话
@@ -143,17 +146,27 @@ class WeixinRunner:
         return image_ids if fresh else []
 
     def _answer(self, text: str, image_ids: list[int]) -> str:
-        """回答一条文字消息，image_ids 是配给这句话的图片；/new 和 /help 是命令。"""
+        """回答一条文字消息，image_ids 是配给这句话的图片；/new、/compact 和 /help 是命令。"""
         if text == "/new":
             self.conversation = Conversation.create(self.services, channel="weixin")
             self._remember_session()
             return "已开始新会话。"
         if text == "/help":
             return HELP
+        if text == "/compact" or text.startswith("/compact "):
+            return self._compact(text.removeprefix("/compact").strip())
         try:
             return self._conversation().respond(text, image_ids=image_ids).content or "（没有生成回答）"
         except Exception as error:
             return f"出错了：{type(error).__name__}。没有自动重试，可以稍后再发一次。"
+
+    def _compact(self, focus: str) -> str:
+        """手动压缩，focus 是摘要要重点保留的内容。出错只回复错误，不影响继续对话。"""
+        try:
+            result = self._conversation().compact(focus)
+        except Exception as error:
+            return f"压缩失败：{type(error).__name__}: {error}"
+        return result.notice() if result else "没有可以压缩的内容：最近约 20K token 的原文会原样保留。"
 
     def _conversation(self) -> Conversation:
         """取微信当前的会话：先用内存里的，再按 state.json 恢复，都没有就新建。"""
