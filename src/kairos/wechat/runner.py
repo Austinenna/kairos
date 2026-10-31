@@ -13,6 +13,7 @@
 """
 
 import json
+import re
 import time
 from pathlib import Path
 from queue import Empty, Queue
@@ -27,6 +28,7 @@ HELP = "直接发文字就可以对话；发图片会自动存档并分类。\n/
 REPLY_BYTES = 1800  # 单条微信消息的长度上限（UTF-8 字节），更长的回答拆成几条发
 RETRY_SECONDS = 10  # 网络出错后隔多久再试
 PAIR_SECONDS = 15 * 60  # 最后一张图之后多久之内说的话，才把这些图带进对话
+MARKDOWN_LINK = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
 
 
 class WeixinRunner:
@@ -169,12 +171,17 @@ class WeixinRunner:
         self._save_state()
 
     def _reply(self, text: str) -> None:
-        for part in split_reply(text):
+        for part in split_reply(plain_links(text)):
             self.client.send(part, self.state["context_token"])
 
     def _save_state(self) -> None:
         self.state_path.write_text(json.dumps(self.state), encoding="utf-8")
         self.state_path.chmod(0o600)  # 里面有回复令牌，只允许当前用户读取
+
+
+def plain_links(text: str) -> str:
+    """微信不显示 Markdown 链接：[标题](网址) 改成“标题 网址”，网址单独成词，微信会自动识别成链接。"""
+    return MARKDOWN_LINK.sub(r"\1 \2 ", text)
 
 
 def split_reply(text: str, limit: int = REPLY_BYTES) -> list[str]:

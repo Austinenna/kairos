@@ -15,7 +15,7 @@ from kairos.services import open_services
 from kairos.wechat import api
 from kairos.wechat import runner as runner_module
 from kairos.wechat.api import Credentials, Incoming, WeixinClient
-from kairos.wechat.runner import WeixinRunner, split_reply
+from kairos.wechat.runner import WeixinRunner, plain_links, split_reply
 
 
 class FakeModel:
@@ -79,6 +79,11 @@ def test_long_reply_is_split_by_bytes():
 
     assert "".join(parts) == "一" * 1000 + "\n" + "二" * 10
     assert all(len(part.encode()) <= 1800 for part in parts)
+
+
+def test_markdown_links_become_title_and_url():
+    text = "来源：\n- [DeepSeek 文档](https://api-docs.deepseek.com/zh-cn/guides/search/)\n- [a](b)"
+    assert plain_links(text) == "来源：\n- DeepSeek 文档 https://api-docs.deepseek.com/zh-cn/guides/search/ \n- [a](b)"
 
 
 def test_image_is_archived_and_receipt_sent(runner):
