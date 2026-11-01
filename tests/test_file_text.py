@@ -25,6 +25,15 @@ def test_read_in_pages(files):
     assert "next_offset" not in rest
 
 
+def test_read_part_of_file_larger_than_10mb(files):
+    path = files.policy.workspace / "big.log"
+    path.write_text("".join(f"{i:07d} {'x' * 100}\n" for i in range(1, 110_001)))  # 约 11MB，以前直接拒绝
+
+    result = files.read("big.log", offset=100_000, limit=2)
+    assert result["total_lines"] == 110_000
+    assert result["content"].splitlines() == [f"100000\t0100000 {'x' * 100}", f"100001\t0100001 {'x' * 100}"]
+
+
 def test_edit_requires_fresh_read(files):
     files.write("待办.md", "- 周三交报告\n- 周五体检\n")
     path = files.policy.workspace / "待办.md"

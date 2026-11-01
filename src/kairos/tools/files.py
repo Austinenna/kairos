@@ -53,12 +53,20 @@ LIST_DIR = tool_schema(
 
 SEARCH_FILES = tool_schema(
     "search_files",
-    "在目录下递归搜索文件，跳过隐藏文件和目录。mode=name 按文件名搜，mode=content 按内容搜。",
+    "在目录下递归搜索文件，跳过隐藏文件和目录。mode=name 按文件名搜，mode=content 按内容搜。"
+    "按内容搜默认只列出匹配的文件和每个文件匹配了几行；要看匹配行，缩小 path 后用 output=content。"
+    "结果有条数和字数上限，没显示完时用 offset 翻页。",
     {
         "query": {"type": "string", "description": "name：文件名关键词或通配符（如 *.md）；content：正则表达式"},
-        "path": {**PATH, "description": "从哪个目录开始搜，默认是工作目录"},
+        "path": {**PATH, "description": "从哪个目录开始搜，也可以是单个文件；默认是工作目录"},
         "mode": {"type": "string", "enum": ["name", "content"], "description": "默认 name"},
         "glob": {"type": "string", "description": "mode=content 时限定文件名，例如 *.md"},
+        "output": {
+            "type": "string",
+            "enum": ["files", "content"],
+            "description": "mode=content 时有用：files 列出文件和匹配行数（默认），content 列出匹配行和行号",
+        },
+        "offset": {"type": "integer", "description": "跳过前几条结果，用来翻页，默认 0"},
     },
     required=["query"],
 )
@@ -77,6 +85,7 @@ def file_tools(files: TextFiles) -> Toolset:
     rules = f"""文件工具规则：
 - 工作目录是 {policy.workspace}。只能在工作目录里新建和修改文件，相对路径也按它解析；其他位置的文件只能读。
 - 不知道文件在哪时，先用 list_dir 或 search_files 查找，不要猜路径。
+- 按内容搜索先看有哪些文件匹配，再用 glob 或缩小 path 只看相关文件的匹配行，拿到行号后用 read_file 的 offset 读上下文。
 - 用户让你看某个路径下的图片时，用 read_file 读取。
 - read_file 结果每行开头的“行号<Tab>”不是文件内容。文件没读完时按 next_offset 接着读，或先搜索再读需要的部分。
 - 修改已有文件用 edit_file：先 read_file，再从结果里原样复制要换掉的文字作为 old_string，带上刚好能让它唯一的几行。

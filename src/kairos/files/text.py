@@ -18,7 +18,7 @@ from .policy import FilePolicy
 MAX_LINES = 2000  # 一次最多返回的行数
 MAX_LINE_CHARS = 2000  # 单行超过这个长度时截断
 MAX_BYTES = 50 * 1024  # 一次最多返回的内容大小
-MAX_FILE_BYTES = 10 * 1024 * 1024  # 超过这个大小的文件不读进内存，让模型改用搜索
+MAX_FILE_BYTES = 10 * 1024 * 1024  # 写入和修改要把整个文件读进内存，超过这个大小的拒绝；读取是逐行的，不受限制
 
 
 class TextFiles:
@@ -31,27 +31,16 @@ class TextFiles:
         if offset < 1 or limit < 1:
             raise ValueError("offset 和 limit 都必须是正整数")
         target = self.policy.readable(path)
-        lines = _load(target).split("\n")
-        if lines[-1] == "":
-            lines.pop()  # 文件以换行结尾时，最后一个空元素不算一行
-        if offset > max(len(lines), 1):
-            raise ValueError(f"offset={offset} 超出了文件行数（共 {len(lines)} 行）")
-        shown, size = [], 0
-        for number, line in enumerate(lines[offset - 1 : offset - 1 + min(limit, MAX_LINES)], start=offset):
-            if len(line) > MAX_LINE_CHARS:
-                line = line[:MAX_LINE_CHARS] + "…（本行过长，已截断）"
-            text = f"{number}\t{line.removesuffix(chr(13))}"
-            size += len(text.encode()) + 1
-            if size > MAX_BYTES and shown:
-                break
-            shown.append(text)
+        shown, total = _window(target, offset, min(limit, MAX_LINES))
+        if offset > max(total, 1):
+            raise ValueError(f"offset={offset} 超出了文件行数（共 {total} 行）")
         self.read_versions[target] = target.stat().st_mtime_ns
-        result = {"path": str(target), "total_lines": len(lines), "content": "\n".join(shown)}
+        result = {"path": str(target), "total_lines": total, "content": "\n".join(shown)}
         end = offset + len(shown) - 1
-        if end < len(lines):
+        if end < total:
             result["next_offset"] = end + 1
             result["note"] = f"已显示第 {offset}–{end} 行，用 offset={end + 1} 继续读。"
-        elif not lines:
+        elif not total:
             result["note"] = "文件是空的。"
         return result
 
@@ -112,10 +101,34 @@ class TextFiles:
         self.read_versions[target] = target.stat().st_mtime_ns
 
 
+def _window(target: Path, offset: int, limit: int) -> tuple[list[str], int]:
+    """逐行读完整个文件，只留下从 offset 开始、不超过 limit 行和 MAX_BYTES 的那一段（带行号），并数出总行数。
+
+    逐行读，内存里只放要返回的那一段，再大的文件也能读其中任意一段。
+    """
+    shown, size, total, full = [], 0, 0, False
+    with target.open("rb") as file:
+        for total, raw in enumerate(file, start=1):
+            if total < offset or full:
+                continue
+            try:
+                line = raw.decode().removesuffix("\n").removesuffix("\r")
+            except UnicodeDecodeError:
+                raise ValueError(f"{target} 不是 UTF-8 文本文件") from None
+            if len(line) > MAX_LINE_CHARS:
+                line = line[:MAX_LINE_CHARS] + "…（本行过长，已截断）"
+            text = f"{total}\t{line}"
+            size += len(text.encode()) + 1
+            full = len(shown) >= limit or (size > MAX_BYTES and bool(shown))
+            if not full:
+                shown.append(text)
+    return shown, total
+
+
 def _load(target: Path) -> str:
     """读出整个文件。太大或不是 UTF-8 文本时报错。"""
     if target.stat().st_size > MAX_FILE_BYTES:
-        raise ValueError(f"{target} 超过 {MAX_FILE_BYTES // 1024 // 1024}MB，请用 search_files 查找需要的部分")
+        raise ValueError(f"{target} 超过 {MAX_FILE_BYTES // 1024 // 1024}MB，太大了不能整份修改")
     try:
         return target.read_bytes().decode()
     except UnicodeDecodeError:

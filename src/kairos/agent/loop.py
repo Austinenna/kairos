@@ -31,7 +31,7 @@ def run_turn(
     prepare: Callable[[list[dict]], list[dict]] | None = None,
     on_text: Callable[[str], None] | None = None,
     on_message: Callable[[dict, Usage | None], None] | None = None,
-    max_requests: int = 10,
+    max_requests: int = 15,
 ) -> TurnResult:
     """执行一轮对话。调用前，用户消息应该已经在 messages 末尾。
 
