@@ -30,7 +30,8 @@ def test_search_by_name_and_content_skips_secrets(policy):
     files = search_files(policy, "支付", mode="content")["matches"]
     assert [(m["path"].rsplit("/", 1)[-1], m["count"]) for m in files] == [("第一周.md", 1)]
     lines = search_files(policy, "支付", mode="content", output="content")["matches"]
-    assert [(m["path"].rsplit("/", 1)[-1], m["line"]) for m in lines] == [("第一周.md", 2)]
+    assert [m["path"].rsplit("/", 1)[-1] for m in lines] == ["第一周.md"]
+    assert lines[0]["lines"] == [{"line": 2, "text": "下周做支付"}]
 
 
 def test_many_matching_lines_do_not_hide_other_files(policy):
@@ -45,10 +46,16 @@ def test_many_matching_lines_do_not_hide_other_files(policy):
         ("b.jsonl", 150),
         ("c.jsonl", 150),
     ]
-    first = search_files(policy, "timestamp", mode="content", output="content", glob="*.jsonl")
-    shown = len(first["matches"])  # 100 条或 2 万字，先到哪个算哪个
-    assert first["total"] == 450 and shown <= 100 and f"offset={shown}" in first["note"]
-    second = search_files(policy, "timestamp", mode="content", output="content", glob="*.jsonl", offset=shown)
+    # 复现 2026-11-01 第二次失败：对整个目录用 content 模式，一页 31 行全被第一个文件占满。
+    grouped = search_files(policy, "timestamp", mode="content", output="content", glob="*.jsonl")
+    assert [(m["count"], len(m["lines"])) for m in grouped["matches"]] == [(150, 5)] * 3
+    assert "把 path 指向那个文件" in grouped["note"]
+
+    one_file = str(policy.workspace / "a.jsonl")
+    first = search_files(policy, "timestamp", path=one_file, mode="content", output="content")
+    shown = len(first["matches"])  # 100 行或 2 万字，先到哪个算哪个
+    assert first["total"] == 150 and f"offset={shown}" in first["note"] and "不能下“只有”“没有”的结论" in first["note"]
+    second = search_files(policy, "timestamp", path=one_file, mode="content", output="content", offset=shown)
     assert second["matches"][0]["line"] == shown + 1
 
 
@@ -58,6 +65,6 @@ def test_large_files_are_searched_and_binary_files_skipped(policy):
     (policy.workspace / "image.bin").write_bytes(b"\0\x01ERROR")
 
     result = search_files(policy, "error", mode="content", output="content")
-    assert [(m["path"].rsplit("/", 1)[-1], m["line"]) for m in result["matches"]] == [("big.log", 200_001)]
+    assert [(m["path"].rsplit("/", 1)[-1], m["lines"][0]["line"]) for m in result["matches"]] == [("big.log", 200_001)]
     single = search_files(policy, "正常", path=str(big), mode="content")
     assert single["matches"] == [{"path": str(big), "count": 200_000}]

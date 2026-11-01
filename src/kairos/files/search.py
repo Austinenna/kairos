@@ -3,6 +3,7 @@
 搜索会跳过隐藏文件和隐藏目录（.git、.ssh、.env 之类），密钥凭证也就不会出现在结果里。
 按内容搜时逐行读文件，内存里只放一行，所以不按文件大小跳过；开头含空字节的当作二进制文件跳过。
 检查到的文件都读完、结果都数清，但进结果的有上限：条数或总字数超出时截断，并说明总数和怎么翻页。
+搜目录时按文件分组，每个文件只给几行示例，一个匹配很多的文件不会把一页占满、挡住其他文件。
 """
 
 import json
@@ -19,6 +20,7 @@ MAX_MATCHES = 100  # 搜索一次最多返回几条（文件或匹配行）
 MAX_RESULT_CHARS = 20_000  # 搜索结果的总字数上限：条数没超、但每条都很长时也要截断
 MAX_SCANNED = 20000  # 搜索最多检查几个文件
 MAX_LINE_CHARS = 500  # 按内容搜时每条匹配行最多显示的字符数
+MAX_LINES_PER_FILE = 5  # 搜目录、output="content" 时每个文件最多显示几行
 BINARY_SNIFF_BYTES = 8192  # 读文件开头这么多字节，含空字节就当作二进制
 
 
@@ -55,14 +57,15 @@ def search_files(
         path: 从哪个目录开始搜，也可以是单个文件（只搜这个文件）；相对路径按工作目录解析。
         mode: "name" 按文件名搜，"content" 按文件内容搜。
         glob: 只在 mode="content" 时有用，限定要搜的文件名，例如 "*.md"。
-        output: 只在 mode="content" 时有用。"files"（默认）列出匹配的文件和每个文件匹配了几行，
-            "content" 列出匹配行。先用 files 找到文件，再缩小 path 用 content 看具体内容。
+        output: 只在 mode="content" 时有用。"files"（默认）列出匹配的文件和每个文件匹配了几行；
+            "content" 还给出匹配行：搜目录时按文件分组，每个文件最多 MAX_LINES_PER_FILE 行，
+            path 是单个文件时逐行给出全部匹配行（可以翻页）。
         offset: 跳过前几条结果，用来翻页。
 
     返回:
         {"matches": [...], "total": 结果总条数, "note"?}。按文件名搜时每条是文件路径；按内容搜时
-        output="files" 每条是 {path, count}，output="content" 每条是 {path, line, text}。
-        没有全部显示，或检查的文件数到了上限时，note 里说明。
+        output="files" 每条是 {path, count}；output="content" 搜目录时每条是 {path, count, lines: [{line, text}]}，
+        搜单个文件时每条是 {path, line, text}。没有全部显示，或检查的文件数到了上限时，note 里说明。
     """
     root = policy.readable(path)
     if not root.exists():
@@ -71,18 +74,24 @@ def search_files(
     if mode == "name":
         pattern = query.lower() if any(c in query for c in "*?[") else f"*{query.lower()}*"
         found = (str(file) for file in files[:MAX_SCANNED] if fnmatch(file.name.lower(), pattern))
+        unit = "个文件"
     else:
         regex = re.compile(query, re.IGNORECASE)
-        found = _grep(policy, files[:MAX_SCANNED], regex, glob, output)
-    result = _page(found, offset)
+        per_file = MAX_LINES_PER_FILE if root.is_dir() else None
+        found = _grep(policy, files[:MAX_SCANNED], regex, glob, output, per_file)
+        unit = "个文件" if output == "files" or per_file else "行"
+    result = _page(found, offset, unit)
+    if mode == "content" and output == "content" and root.is_dir():
+        note = f"每个文件最多显示 {MAX_LINES_PER_FILE} 行，count 是它的全部匹配行数；要看全部，把 path 指向那个文件"
+        result["note"] = f"{result['note']}；{note}" if "note" in result else note
     if len(files) > MAX_SCANNED:
         note = f"检查了 {MAX_SCANNED} 个文件后停止，后面的没有搜，请缩小目录"
         result["note"] = f"{result['note']}；{note}" if "note" in result else note
     return result
 
 
-def _page(found: Iterable, offset: int) -> dict:
-    """数出全部结果，只留下从 offset 开始、不超过条数和字数上限的一页。"""
+def _page(found: Iterable, offset: int, unit: str) -> dict:
+    """数出全部结果，只留下从 offset 开始、不超过条数和字数上限的一页。unit 是一条结果的单位，写进说明里。"""
     matches, chars, total, full = [], 0, 0, False
     for total, match in enumerate(found, start=1):
         if total <= offset or full:
@@ -95,7 +104,8 @@ def _page(found: Iterable, offset: int) -> dict:
     end = offset + len(matches)
     if end < total:
         result["note"] = (
-            f"共 {total} 条，显示了第 {offset + 1}–{end} 条。用 offset={end} 看后面的，或缩小目录、换更具体的关键词"
+            f"共 {total} {unit}，这次只显示了第 {offset + 1}–{end} {unit}，没看完之前不能下“只有”“没有”的结论。"
+            f"用 offset={end} 看后面的，或缩小目录、换更具体的关键词"
         )
     return result
 
@@ -113,20 +123,32 @@ def _walk(root: Path) -> Iterator[Path]:
                     return
 
 
-def _grep(policy: FilePolicy, files: list[Path], regex: re.Pattern, glob: str | None, output: str) -> Iterator[dict]:
-    """按内容搜：output="files" 时每个有匹配的文件给出一条 {path, count}，否则每条匹配行给出一条。
+def _grep(
+    policy: FilePolicy, files: list[Path], regex: re.Pattern, glob: str | None, output: str, per_file: int | None
+) -> Iterator[dict]:
+    """按内容搜，每个有匹配的文件给出：
 
-    匹配行边读边交出去，不在内存里攒着，用 "." 这种正则搜大文件也不会占很多内存。
+    - output="files"：一条 {path, count}；
+    - output="content" 且 per_file 是数字（搜目录）：一条 {path, count, lines}，lines 只留前 per_file 行；
+    - output="content" 且 per_file 是 None（搜单个文件）：每个匹配行一条 {path, line, text}。
+
+    匹配行边读边交出去或只计数，不在内存里攒着，用 "." 这种正则搜大文件也不会占很多内存。
     """
     for file in files:
         if glob and not fnmatch(file.name.lower(), glob.lower()):
             continue
         lines = _matching_lines(policy, file, regex)
-        if output == "files":
-            if count := sum(1 for _ in lines):
-                yield {"path": str(file), "count": count}
-        else:
+        if output == "content" and per_file is None:
             yield from ({"path": str(file), "line": number, "text": text} for number, text in lines)
+            continue
+        shown, count = [], 0
+        for count, (number, text) in enumerate(lines, start=1):
+            if output == "content" and count <= per_file:
+                shown.append({"line": number, "text": text})
+        if count and output == "files":
+            yield {"path": str(file), "count": count}
+        elif count:
+            yield {"path": str(file), "count": count, "lines": shown}
 
 
 def _matching_lines(policy: FilePolicy, file: Path, regex: re.Pattern) -> Iterator[tuple[int, str]]:
