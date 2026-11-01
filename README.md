@@ -38,6 +38,8 @@ uv run kairos --channels terminal  # 只启动终端（或 --channels weixin 只
 | `/history` | 查看当前会话的消息 |
 | `/compact [重点]` | 把较早的对话压缩成摘要；可以写上摘要要重点保留的内容 |
 | `/file 路径` | 把文本文件的内容作为消息发送 |
+| `/trace [N] [ID]` | 回看倒数第 N 轮（默认最近一轮）：每次请求的用量、费用和耗时，每个工具的参数、结果和耗时，报错标红；写上会话 ID 可以看别的会话（例如定时任务的会话） |
+| `/bad 备注` | 觉得最近一轮不对时，把它存成失败用例，备注写哪里不对 |
 | `/help`、`/exit` | 帮助、退出（Ctrl+D 或连按两次 Ctrl+C 也可以退出） |
 
 - **Enter** 发送，**Alt+Enter** 换行。生成回答时按 **Esc** 中断，已显示的部分会保留在历史里。
@@ -57,7 +59,7 @@ uv run kairos --channels terminal  # 只启动终端（或 --channels weixin 只
 uv run --with 'qrcode[pil]' python -m kairos.wechat   # 首次扫码登录
 ```
 
-登录后 `uv run kairos` 会同时启动微信入口。Bot 只回复扫码登录的本人，支持文字和图片。发来的图片会自动存档：模型看图后给出分类、标题和描述，原图存到 `~/.kairos/files/<分类>/`，并回复存放位置。发图后接着说的那句话会带上这些图（最后一张图之后 15 分钟内），可以直接问图里的内容；对话里较早的图只保留描述，模型需要时用 `view_image` 取回原图。之后在终端或微信里问“上次那张停车票存哪了”，模型会用 `search_images` 找出文件路径；微信里可以发 `/new` 开始新会话、`/compact [重点]` 手动压缩上下文、`/help` 查看帮助；上下文超过阈值时也会自动压缩。终端和微信可以同时使用，两边共用会话、记忆和待办。
+登录后 `uv run kairos` 会同时启动微信入口。Bot 只回复扫码登录的本人，支持文字和图片。发来的图片会自动存档：模型看图后给出分类、标题和描述，原图存到 `~/.kairos/files/<分类>/`，并回复存放位置。发图后接着说的那句话会带上这些图（最后一张图之后 15 分钟内），可以直接问图里的内容；对话里较早的图只保留描述，模型需要时用 `view_image` 取回原图。之后在终端或微信里问“上次那张停车票存哪了”，模型会用 `search_images` 找出文件路径；微信里可以发 `/new` 开始新会话、`/compact [重点]` 手动压缩上下文、`/trace` 回看一轮、`/bad 备注` 存失败用例、`/help` 查看帮助；上下文超过阈值时也会自动压缩。终端和微信可以同时使用，两边共用会话、记忆和待办。
 
 ### 记忆
 
@@ -117,6 +119,7 @@ uv run kairos ─▶ terminal/app.py ─▶ open_services()（services.py，全�
 | `terminal/` | 主循环和命令、输入框（图片）、Markdown 流式渲染、读取 macOS 剪贴板 |
 | `wechat/` | iLink 协议、微信收发线程 |
 | `images/` | `prepare.py` 图片预处理；`archive.py` 存原图、`images` 表；`classifier.py` 后台线程用自己的数据库连接让模型分类，不占用对话；`refs.py` 请求前把历史里的图片引用展开：最近一批给原图，更早的给描述；本轮 `view_image` 和 `read_file` 读到的图片附上原图 |
+| `evals/` | 回看和失败用例：`trace.py` 从 `messages` 拼出一轮的请求、工具、用量和耗时（`/trace`）；`cases.py` 把最近一轮连同之前的上下文存成 `~/.kairos/evals/cases/` 下的 JSON（`/bad`），攒够后再做回放评测 |
 | `files/` | 文件工具的实际逻辑：`policy.py` 路径规则（拒绝清单拦系统目录、密钥凭证、会自动执行的配置和 `~/.kairos`，写入只允许工作目录）；`text.py` 文本文件读写改，先读后改检查、原子写入；`search.py` 列目录、按文件名或内容搜索 |
 | `web/` | 联网工具的实际逻辑：`client.py` 经网关调用 DeepSeek 的搜索和抓取接口（请求体与原生接口相同，不带 model）；`results.py` 整理结果：只留标题、链接、站点、日期和摘要，短摘要模式每条 800 字，抓取正文最多 5 万字，并标明是网页资料 |
 | `schedule/` | 定时推送：`store.py` 存任务（`schedules` 表）、算下次触发时间（cron 用 croniter）；`runner.py` 调度线程，到期后生成内容、交给入口推送 |
@@ -132,6 +135,7 @@ uv run kairos ─▶ terminal/app.py ─▶ open_services()（services.py，全�
 | `.env` | 配置和 API Key |
 | `kairos.db` | 会话、消息、用量、压缩摘要、待办，以及归档图片的信息（`images` 表） |
 | `memories/` | 记忆 |
+| `evals/cases/` | `/bad` 存下的失败用例，一轮一个 JSON 文件，可以直接打开补上 `expected` |
 | `files/` | 归档的图片，按分类分文件夹；分类失败的留在 `inbox/` |
 | `channels/weixin/` | 微信凭据 `account.json`、收发状态 `state.json` |
 

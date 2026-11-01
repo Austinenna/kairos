@@ -24,9 +24,11 @@ class CompactResult:
         return f"已压缩上下文：{self.tokens_before:,} → 约 {self.tokens_after:,} tokens"
 
 
-def load_context(sessions: SessionStore, session_id: str) -> list[dict]:
-    """发给模型的历史。没压缩过就是完整历史。"""
+def load_context(sessions: SessionStore, session_id: str, before: int | None = None) -> list[dict]:
+    """发给模型的历史。没压缩过就是完整历史。before 是消息编号，只取它之前的消息（存失败用例时用）。"""
     compaction, rows = _load(sessions, session_id)
+    if before is not None:
+        rows = [row for row in rows if row.id < before]
     return _context(compaction, rows, session_id)
 
 

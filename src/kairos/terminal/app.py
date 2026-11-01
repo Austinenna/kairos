@@ -15,6 +15,8 @@ from pydantic import ValidationError
 from ..compaction.budget import WARNING_BUFFER
 from ..config import Settings, get_app_dir
 from ..conversation import Conversation
+from ..evals.cases import save_case
+from ..evals.trace import TERMINAL_WIDTH, load_trace
 from ..images.prepare import Image, text_of
 from ..schedule.runner import ScheduleRunner
 from ..services import Services, open_services
@@ -36,6 +38,8 @@ HELP = """命令：
   /history          查看当前会话的消息
   /compact [重点]   把较早的对话压缩成摘要，可以写上摘要要重点保留的内容
   /file 路径        把一个文本文件的内容作为消息发送
+  /trace [N] [ID]   回看倒数第 N 轮（默认最近一轮）的请求、工具调用、耗时和用量；ID 可以看别的会话
+  /bad 备注         觉得最近一轮不对时，把它存成失败用例，备注写哪里不对
   /help             显示本帮助
   /exit             退出（Ctrl+D、连按两次 Ctrl+C 也可以）
 生成回答时按 Esc 中断。"""
@@ -255,6 +259,12 @@ def run_command(
     elif command == "/file":
         path = Path(argument).expanduser()
         send(conversation, renderer, f"文件 {path.name} 的内容：\n\n{path.read_text(encoding='utf-8')}", [])
+    elif command == "/trace":
+        for line in load_trace(services.sessions, conversation.session.id, argument, TERMINAL_WIDTH):
+            (renderer.error if line.error else renderer.info)(line.text)
+    elif command == "/bad":
+        path = save_case(services.sessions, conversation.session, argument, services.memory.snapshot())
+        renderer.info(f"已存成失败用例：{path}" if path else "这个会话还没有对话。")
     elif command == "/help":
         renderer.info(HELP)
     else:

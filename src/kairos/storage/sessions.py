@@ -71,6 +71,17 @@ class StoredMessage:
 
 
 @dataclass
+class MessageRecord:
+    """一条消息连同用量、费用和保存时间，回看一轮时用。"""
+
+    id: int
+    message: dict
+    usage: Usage | None  # 只有模型请求产生的助手消息才有
+    cost_usd: float | None
+    created_at: datetime
+
+
+@dataclass
 class Compaction:
     summary: str
     first_kept_message_id: int
@@ -178,6 +189,21 @@ class SessionStore:
         )
         return [StoredMessage(row["id"], json.loads(row["message"]), row["context_tokens"]) for row in rows]
 
+    def turn(self, session_id: str, back: int = 1) -> list[MessageRecord]:
+        """倒数第 back 轮的全部消息：从倒数第 back 条用户消息开始，到下一条用户消息之前。没有这一轮时返回空列表。"""
+        starts = self.db.execute(
+            "SELECT id FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id DESC LIMIT ?",
+            (session_id, back),
+        ).fetchall()
+        if len(starts) < back:
+            return []
+        start, end = starts[back - 1]["id"], starts[back - 2]["id"] if back > 1 else None
+        rows = self.db.execute(
+            "SELECT * FROM messages WHERE session_id = ? AND id >= ? AND (? IS NULL OR id < ?) ORDER BY id",
+            (session_id, start, end, end),
+        )
+        return [_record(row) for row in rows]
+
     def add_compaction(
         self, session_id: str, summary: str, first_kept_message_id: int, last_message_id: int, tokens_before: int
     ) -> None:
@@ -214,7 +240,16 @@ class SessionStore:
 
 
 def _now() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+    # 精确到毫秒，回看一轮时才算得出每次请求和每个工具各花了多久。旧数据只到秒，同样能解析。
+    return datetime.now().astimezone().isoformat(timespec="milliseconds")
+
+
+def _record(row: sqlite3.Row) -> MessageRecord:
+    usage = None
+    if row["input_tokens"] is not None:
+        usage = Usage(row["input_tokens"], row["cached_input_tokens"], row["output_tokens"], row["reasoning_tokens"])
+    message = json.loads(row["message"])
+    return MessageRecord(row["id"], message, usage, row["cost_usd"], datetime.fromisoformat(row["created_at"]))
 
 
 def _session(row: sqlite3.Row) -> Session:

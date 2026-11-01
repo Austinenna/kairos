@@ -20,13 +20,16 @@ from queue import Empty, Queue
 from threading import Event, Thread
 
 from ..conversation import Conversation
+from ..evals.cases import save_case
+from ..evals.trace import WEIXIN_WIDTH, load_trace
 from ..images.archive import ArchivedImage
 from ..services import Services
 from .api import Credentials, Incoming, WeixinClient, WeixinError
 
 HELP = (
     "直接发文字就可以对话；发图片会自动存档并分类。\n/new 开始新会话\n"
-    "/compact [重点] 把较早的对话压缩成摘要，可以写上要重点保留的内容\n/help 显示本帮助"
+    "/compact [重点] 把较早的对话压缩成摘要，可以写上要重点保留的内容\n"
+    "/trace [N] [会话ID] 回看倒数第 N 轮发生了什么\n/bad 备注 把最近一轮存成失败用例\n/help 显示本帮助"
 )
 REPLY_BYTES = 1800  # 单条微信消息的长度上限（UTF-8 字节），更长的回答拆成几条发
 RETRY_SECONDS = 10  # 网络出错后隔多久再试
@@ -146,7 +149,7 @@ class WeixinRunner:
         return image_ids if fresh else []
 
     def _answer(self, text: str, image_ids: list[int]) -> str:
-        """回答一条文字消息，image_ids 是配给这句话的图片；/new、/compact 和 /help 是命令。"""
+        """回答一条文字消息，image_ids 是配给这句话的图片；/new、/compact、/trace、/bad 和 /help 是命令。"""
         if text == "/new":
             self.conversation = Conversation.create(self.services, channel="weixin")
             self._remember_session()
@@ -155,6 +158,13 @@ class WeixinRunner:
             return HELP
         if text == "/compact" or text.startswith("/compact "):
             return self._compact(text.removeprefix("/compact").strip())
+        if text == "/trace" or text.startswith("/trace "):
+            return self._trace(text.removeprefix("/trace").strip())
+        if text == "/bad" or text.startswith("/bad "):
+            conversation = self._conversation()
+            note = text.removeprefix("/bad").strip()
+            path = save_case(self.services.sessions, conversation.session, note, self.services.memory.snapshot())
+            return f"已存成失败用例：{path}" if path else "这个会话还没有对话。"
         try:
             return self._conversation().respond(text, image_ids=image_ids).content or "（没有生成回答）"
         except Exception as error:
@@ -167,6 +177,14 @@ class WeixinRunner:
         except Exception as error:
             return f"压缩失败：{type(error).__name__}: {error}"
         return result.notice() if result else "没有可以压缩的内容：最近约 20K token 的原文会原样保留。"
+
+    def _trace(self, argument: str) -> str:
+        """回看一轮，argument 同终端的 /trace。会话 ID 写错时回复错误。"""
+        try:
+            lines = load_trace(self.services.sessions, self._conversation().session.id, argument, WEIXIN_WIDTH)
+        except ValueError as error:
+            return str(error)
+        return "\n".join(line.text for line in lines)
 
     def _conversation(self) -> Conversation:
         """取微信当前的会话：先用内存里的，再按 state.json 恢复，都没有就新建。"""
